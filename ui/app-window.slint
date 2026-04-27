@@ -1,0 +1,188 @@
+import { LineEdit, Button, ProgressIndicator, HorizontalBox, GroupBox } from "std-widgets.slint";
+
+export struct LogItem {
+    title: string,
+}
+export component AppWindow inherits Window {
+  title: "m3u8downloader v0.1.0";
+
+  in-out property <bool> enable-start-btn: true;
+  in-out property <bool> enable-pause-btn: false;
+  in-out property <bool> enable-cancel-btn: false;
+  in-out property <bool> is-pause: false;
+
+  in-out property <string> work-dir <=> le-work-dir.text;
+  in-out property <string> video-dir <=> le-video-dir.text;
+  in-out property <string> m3u8-url <=> le-m3u8-url.text;
+
+  in-out property <string> message;
+  in-out property <float> percent;
+  in-out property <int> progress;
+  in-out property <string> total;
+
+  out property <int> threads: 4;
+  out property <int> retry: 3;
+  out property <int> timeout: 3;
+
+  callback select-dir();
+  callback start-download();
+  callback pause-download();
+  callback cancel-download();
+
+  VerticalLayout {
+    width: root.width;
+    padding: 8px;
+    spacing: 4px;
+
+    GridLayout {
+      spacing: 6px;
+      Row {
+        Rectangle {
+          width: 110px;
+          Text {
+            text: "Working Directory";
+          }
+          Text {
+            x: 105px;
+            text: "*";
+            color: red;
+          }
+        }
+        le-work-dir := LineEdit {
+          read-only: true;
+        }
+        Button {
+          enabled: !root.is-pause;
+          text: "Change";
+          clicked => { root.select-dir(); }
+        }
+      }
+
+      Row {
+        Rectangle {
+          Text {
+            text: "M3U8 URL";
+          }
+          Text {
+            x: 86px;
+            text: "*";
+            color: red;
+          }
+        }
+        le-m3u8-url := LineEdit {
+          colspan: 2;
+          enabled: !root.is-pause;
+        }
+      }
+
+      Row {
+        Rectangle {
+          Text {
+            text: "Video Name";
+          }
+          Text {
+            x: 92px;
+            text: "*";
+            color: red;
+          }
+        }
+        le-video-dir := LineEdit {
+          colspan: 2;
+          enabled: !root.is-pause;
+        }
+      }
+
+      Row {
+        Rectangle {
+          Text {
+            text: "Threads";
+          }
+        }
+        LineEdit {
+          text: root.threads;
+          input-type: number;
+          colspan: 2;
+        }
+      }
+
+      Row {
+        Rectangle {
+          Text {
+            text: "Retry";
+          }
+        }
+        LineEdit {
+          text: root.retry;
+          input-type: number;
+          colspan: 2;
+        }
+      }
+
+      Row {
+        Rectangle {
+          Text {
+            text: "Timeout(s)";
+          }
+        }
+        LineEdit {
+          text: root.timeout;
+          input-type: number;
+          colspan: 2;
+        }
+      }
+    }
+
+    VerticalLayout {
+      // spacing: 6px;
+      HorizontalBox {
+        x: parent.width - 265px;
+        // spacing: 8px;
+        Button {
+          width: 80px;
+          text: root.is-pause ? "Continue" : "Download";
+          enabled: root.enable-start-btn && !root.work-dir.is-empty && !root.video-dir.is-empty && !root.m3u8-url.is-empty;
+          primary: true;
+          clicked => {
+            root.enable-start-btn = false;
+            root.enable-pause-btn = true;
+            root.enable-cancel-btn = true;
+            root.is-pause = false;
+            root.message = "downloading...";
+            root.start-download();
+          }
+        }
+        Button {
+          width: 80px;
+          text: "Pause";
+          enabled: root.enable-pause-btn;
+          clicked => {
+            root.pause-download();
+          }
+        }
+        Button {
+          width: 80px;
+          text: "Cancel";
+          enabled: root.enable-cancel-btn;
+          clicked => {
+            root.cancel-download();
+          }
+        }
+      }
+      HorizontalBox {
+        Text {
+          text: "Progress " + (!root.total.is-empty ? root.progress : "") + root.total;
+        }
+      }
+      HorizontalBox {
+        ProgressIndicator {
+          progress: root.percent;
+        }
+      }
+      Text {
+        text: root.message;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+      }
+    }
+  }
+}

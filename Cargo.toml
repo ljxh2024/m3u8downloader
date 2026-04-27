@@ -1,0 +1,13 @@
+[package]
+name = "m3u8downloader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slint = { version = "1.16.0", default-features = false, features = ["compat-1-2", "std", "backend-default", "renderer-femtovg"] }
+rfd = "0.17.2"
+reqwest = { version = "0.13", features = ["blocking", "stream"] }
+url = "2.5.8"
+
+[build-dependencies]
+slint-build = "1.16.0"
