@@ -1,5 +1,3 @@
-/// 线程池实现
-
 use std::{
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -41,7 +39,7 @@ impl Drop for ThreadPool {
         drop(self.sender.take());
 
         for worker in self.workers.drain(..) {
-            println!("Shutting down worker {}", worker.id);
+            // println!("Shutting down worker {}", worker.id);
             worker.thread.join().unwrap();
         }
     }

@@ -1,6 +1,6 @@
 pub mod thread_pool;
 
-use std::{fs::{self, File}, io::{BufWriter, Write}, path::Path, sync::{Arc, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc::{self, TryRecvError}}, thread, time::Duration};
+use std::{fs::{self, File}, io::{BufWriter, Write}, path::Path, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc::{self, TryRecvError}}, thread, time::Duration};
 use slint::SharedString;
 use url::Url;
 use reqwest::blocking::Client;
@@ -11,9 +11,17 @@ slint::include_modules!();
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
 
-    // 下载管理器
-    let download_management = DownloadManagement::new();
+    let downloading = Arc::new(AtomicBool::new(false));
+    let is_pause = Arc::new(AtomicBool::new(false));
+    let is_new_task = Arc::new(AtomicBool::new(true));
+    let is_cancel = Arc::new(AtomicBool::new(false));
+    let total_nums = Arc::new(AtomicU32::new(0)); // 总文件数
+    // 已下载的文件列表，存储download_url
+    let downloaded_files: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    // 线程管理
+    let thread_handles: Arc<Mutex<Option<Vec<thread::JoinHandle<()>>>>> = Arc::new(Mutex::new(Some(vec![])));
 
+    // 选择目录
     window.on_select_dir({
         let ui_weak = window.as_weak();
         move || {
@@ -23,239 +31,204 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     // 暂停下载
     window.on_pause_download({
-        let pause = Arc::clone(&download_management.pause);
+        let ui_weak = window.as_weak();
+        let is_new_task = Arc::clone(&is_new_task);
+        let is_pause = Arc::clone(&is_pause);
+        let thread_handles_clone_pause = Arc::clone(&thread_handles);
+        let downloading_clone = Arc::clone(&downloading);
+
         move || {
-            println!("pause");
-            pause.store(true, Ordering::Relaxed);
+            downloading_clone.store(false, Ordering::Relaxed);
+            is_new_task.store(false, Ordering::Relaxed); // 表示不是一个新下载任务
+            is_pause.store(true, Ordering::Relaxed);
+
+            let ui = ui_weak.unwrap();
+            set_ui_with_pause(&ui, SharedString::from("You paused the download."));
+            release_threads(&thread_handles_clone_pause);
         }
     });
 
     // 取消下载
     window.on_cancel_download({
         let ui_weak = window.as_weak();
-        let cancel = Arc::clone(&download_management.cancel);
-        let downloaded_files = Arc::clone(&download_management.downloaded_files);
-        let pause = Arc::clone(&download_management.pause);
-        let running = Arc::clone(&download_management.running);
+        let is_new_task = Arc::clone(&is_new_task);
+        let is_pause = Arc::clone(&is_pause);
+        let is_cancel = Arc::clone(&is_cancel);
+        let downloaded_files_clone = Arc::clone(&downloaded_files);
+        let thread_handles_clone_cancel = Arc::clone(&thread_handles);
+        let downloading_clone = Arc::clone(&downloading);
+
         move || {
-            println!("cancel");
+            // 清空并立即释放锁
+            downloaded_files_clone.lock().unwrap().clear();
 
-            // 暂停时取消下载
-            if running.load(Ordering::Relaxed) && pause.load(Ordering::Relaxed) {
-                downloaded_files.store(0, Ordering::Relaxed);
+            downloading_clone.store(false, Ordering::Relaxed);
+            is_new_task.store(true, Ordering::Relaxed);
+            is_pause.store(false, Ordering::Relaxed);
+            is_cancel.store(true, Ordering::Relaxed);
 
-                let ui = ui_weak.unwrap();
-                ui.set_message("canceled.".into());
-                ui.set_progress(0);
-                ui.set_percent(0.0);
-                ui.set_total(SharedString::new());
-                ui.set_is_pause(false);
-                ui.set_enable_start_btn(true);
-                ui.set_enable_pause_btn(false);
-                ui.set_enable_cancel_btn(false);
-            } else {
-                // 下载时取消下载
-                cancel.store(true, Ordering::Relaxed);
-            }
+            let ui = ui_weak.unwrap();
+            reset_ui_with_default(&ui, SharedString::from("You canceled the download."), true);
+
+            release_threads(&thread_handles_clone_cancel);
         }
     });
 
-    // 启动下载
+    // 启动新的（或继续）下载任务
     window.on_start_download({
         let ui_weak = window.as_weak();
+        let is_new_task = Arc::clone(&is_new_task);
+        let is_pause = Arc::clone(&is_pause);
+        let is_cancel = Arc::clone(&is_cancel);
+        let downloaded_files_clone = Arc::clone(&downloaded_files);
+        let thread_handles_download = Arc::clone(&thread_handles);
+        let total_nums_clone = Arc::clone(&total_nums);
+        let downloading_clone = Arc::clone(&downloading);
+
         move || {
+            is_pause.store(false, Ordering::Relaxed);
+            is_cancel.store(false, Ordering::Relaxed);
+
             let ui = ui_weak.unwrap();
-            
-            let threads = ui.get_threads() as usize;
-            let retry = ui.get_retry();
-            let timeout = ui.get_timeout() as u64;
+
+            ui.set_message(SharedString::from("Parsing M3U8..."));
+
+            let threads = ui.get_threads().parse::<usize>().unwrap_or(4);
+            let retry = ui.get_retry().parse::<u32>().unwrap_or(3);
+            let timeout = ui.get_retry().parse::<u64>().unwrap_or(5);
             let m3u8_url = ui.get_m3u8_url();
 
+            // 保存目录
             let save_dir = format!("{}\\{}", ui.get_work_dir(), ui.get_video_dir());
             if !Path::new(&save_dir).is_dir() && fs::create_dir_all(&save_dir).is_err() {
                 ui.set_message("Failed to create directory.".into());
                 return;
             }
 
-            let ui_weak = ui.as_weak();
-            let downloaded_files = Arc::clone(&download_management.downloaded_files);
+            let (tx, rx) = mpsc::channel(); // 使用通道传递进度信息
+            let ui_weak_1 = ui.as_weak();
+            let is_new_task_clone = Arc::clone(&is_new_task);
+            let is_pause_clone = Arc::clone(&is_pause);
+            let is_cancel_clone = Arc::clone(&is_cancel);
+            let downloaded_files_clone = Arc::clone(&downloaded_files_clone);
+            let total_nums_clone = Arc::clone(&total_nums_clone);
+            let downloading_clone = Arc::clone(&downloading_clone);
 
-            let running = Arc::clone(&download_management.running);
-            let pause = Arc::clone(&download_management.pause);
-            let cancel = Arc::clone(&download_management.cancel);
-
-            if !running.load(Ordering::Relaxed) {
-                running.store(true, Ordering::Relaxed);
-                ui.set_progress(0);
-                ui.set_percent(0.0);
-                ui.set_total(SharedString::new());
-            }
-            pause.store(false, Ordering::Relaxed);
-            cancel.store(false, Ordering::Relaxed);
-
-            let (tx, rx) = mpsc::channel();
-
-            thread::spawn(move || {
+            // 使用新线程下载文件
+            let handle_download = thread::spawn(move || {
                 match resolve_m3u8(&m3u8_url, &save_dir, retry, timeout) {
                     Ok(wait_download_files) => {
-                        let file_nums = wait_download_files.len() as u32;
-                        let start_index = downloaded_files.load(Ordering::Relaxed);
-                        ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_progress(start_index as i32);
-                            ui.set_total(format!(" / {}", file_nums).into());
-                        }).unwrap();
-
-                        // 处理暂停再继续时，文件已下载完毕
-                        if start_index >= file_nums {
-                            println!("start_index=file_nums");
-                            ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.set_message("The download has been completed.".into());
-                                ui.set_progress(0);
-                                ui.set_total(SharedString::new());
-                                ui.set_enable_start_btn(true);
-                                ui.set_enable_pause_btn(false);
-                                ui.set_enable_cancel_btn(false);
-                            }).unwrap();
+                        // 需要下载的文件列表
+                        let new_files: Vec<WaitDownloadFile> = if is_new_task_clone.load(Ordering::Relaxed) {
+                            wait_download_files
                         } else {
-                            let pool = ThreadPool::new(threads);
+                            let finished_files = downloaded_files_clone.lock().unwrap();
+                            // 过滤已下载的文件
+                            wait_download_files.into_iter().filter(|item| !finished_files.contains(&item.download_url)).collect()
+                        };
+                        // 总文件数
+                        let total_file_nums = if is_new_task_clone.load(Ordering::Relaxed) {
+                            let len = new_files.len() as u32;
+                            total_nums_clone.store(len, Ordering::Relaxed);
+                            len
+                        } else {
+                            total_nums_clone.load(Ordering::Relaxed)
+                        };
+                        
+                        // 下载前重置部分UI
+                        ui_weak_1.upgrade_in_event_loop(move |ui| {
+                            ui.set_message(SharedString::from("Downloading..."));
+                            ui.set_is_pause(false);
+                            ui.set_enable_pause_btn(true); // 允许暂停
+                            ui.set_enable_cancel_btn(true); // 允许取消
+                            ui.set_total(SharedString::from(format!(" / {}",total_file_nums)));
+                        }).unwrap();
+                        
+                        downloading_clone.store(true, Ordering::Relaxed);
 
-                            for index in start_index..file_nums {
-                                let downloaded_files_clone = Arc::clone(&downloaded_files);
-                                let pause_clone = Arc::clone(&pause);
-                                let cance_clonel = Arc::clone(&cancel);
-                                let ui_weak_clone = ui_weak.clone();
-
-                                let client = Client::builder().connect_timeout(Duration::from_secs(timeout)).build().unwrap();
-                                let filename = wait_download_files.get(index as usize).unwrap().filename.to_string();
-                                let url = wait_download_files.get(index as usize).unwrap().url.to_string();
-
-                                let tx_clone = tx.clone();
-                                
-                                pool.execute(move || {
-                                    // 暂停下载
-                                    if pause_clone.load(Ordering::Relaxed) {
-                                        ui_weak_clone.upgrade_in_event_loop(move |ui| {
-                                            ui.set_message("Paused.".into());
-                                            ui.set_is_pause(true);
-                                            ui.set_enable_start_btn(true);
-                                            ui.set_enable_pause_btn(false);
-                                            ui.set_enable_cancel_btn(true);
-                                        }).unwrap();
-                                        return;
-                                    }
-                                    // 取消下载
-                                    if cance_clonel.load(Ordering::Relaxed) {
-                                        ui_weak_clone.upgrade_in_event_loop(move |ui| {
-                                            ui.set_message("Canceled.".into());
-                                            ui.set_progress(0);
-                                            ui.set_percent(0.0);
-                                            ui.set_total(SharedString::new());
-                                            ui.set_enable_start_btn(true);
-                                            ui.set_enable_pause_btn(false);
-                                            ui.set_enable_cancel_btn(false);
-                                        }).unwrap();
-                                        return;
-                                    }
-
+                        let pool = ThreadPool::new(threads);
+                        for item in new_files {
+                            let tx_clone = tx.clone();
+                            let is_pause_clone = Arc::clone(&is_pause_clone);
+                            let is_cancel_clone = Arc::clone(&is_cancel_clone);
+                            let client = Client::builder().connect_timeout(Duration::from_secs(timeout)).build().unwrap();
+                            let downloaded_files_clone = Arc::clone(&downloaded_files_clone);
+                            pool.execute(move || {
+                                if !is_pause_clone.load(Ordering::Relaxed) && !is_cancel_clone.load(Ordering::Relaxed) {
+                                    let mut is_finish = false;
+                                    // 带重试的下载
                                     for attempt in 0..retry {
-                                        if let Ok(resp) = client.get(url.as_str()).send() && resp.status().is_success() {
+                                        if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
                                             let content = resp.bytes().unwrap();
-                                            let mut file = File::create(filename.as_str()).unwrap();
+                                            let mut file = File::create(&item.save_path).unwrap();
                                             file.write_all(&content).unwrap();
-                                            downloaded_files_clone.fetch_add(1, Ordering::Relaxed);
-                                            let percent = ((downloaded_files_clone.load(Ordering::Relaxed) as f32 / file_nums as f32) * 100.0).floor();
-                                            tx_clone.send((percent, downloaded_files_clone.load(Ordering::Acquire))).unwrap();
+
+                                            // 记录已下载的文件
+                                            let n = {
+                                                let mut downloaded = downloaded_files_clone.lock().unwrap();
+                                                downloaded.push(item.download_url.to_owned());
+                                                downloaded.len()
+                                            };
+                                            // 用以进度条展示
+                                            let percent = ((n as f32 / total_file_nums as f32) * 100.0).floor();
+                                            tx_clone.send(ChannelMessage::Schedule(n as i32, percent as u32)).unwrap();
+
+                                            is_finish = true;
                                             break;
                                         }
-
                                         if attempt < retry - 1 {
-                                            thread::sleep(Duration::from_millis(100));
+                                            tx_clone.send(ChannelMessage::Retry(SharedString::from(format!("Retrying to download: {}", &item.download_url)))).unwrap();
+                                            thread::sleep(Duration::from_millis(200));
                                         }
                                     }
-                                });
-                            }
+                                    if !is_finish {
+                                        is_pause_clone.store(true, Ordering::Relaxed);
+                                        tx_clone.send(ChannelMessage::Pause(format!("Download failed: {}", &item.download_url))).unwrap();
+                                    }
+                                }
+                            });
                         }
                     },
                     Err(e) => {
-                        let err = e.to_string();
-                        ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_message(format!("{err}").into());
-                            ui.set_enable_start_btn(true);
-                            ui.set_enable_pause_btn(false);
-                            ui.set_enable_cancel_btn(false);
+                        let err_msg = e.to_string();
+                        ui_weak_1.upgrade_in_event_loop(move |ui| {
+                            reset_ui_with_default(&ui, SharedString::from(err_msg), false);
                         }).unwrap();
                     }
                 }
             });
 
             // 监控下载进度
-            let ui_weak_rx = ui.as_weak();
-            let downloaded_files_rx = Arc::clone(&download_management.downloaded_files);
-            let downloaded_running_rx = Arc::clone(&download_management.running);
-            thread::spawn(move || {
-                loop {
-                    match rx.try_recv() {
-                        Ok((percent, download_file_nums)) => {
-                            let downloaded_files_rx = Arc::clone(&downloaded_files_rx);
-                            let downloaded_running_rx = Arc::clone(&downloaded_running_rx);
-                            ui_weak_rx.upgrade_in_event_loop(move |ui| {
-                                ui.set_progress(download_file_nums as i32);
-                                // todo: 在下载中取消下载时进度应为0
-                                ui.set_percent(percent / 100.0);
-
-                                if percent == 100.0 {
-                                    downloaded_files_rx.store(0, Ordering::Relaxed);
-                                    downloaded_running_rx.store(false, Ordering::Relaxed);
-                                    ui.set_message("Download Finished.".into());
-                                    ui.set_enable_start_btn(true);
-                                    ui.set_enable_pause_btn(false);
-                                    ui.set_enable_cancel_btn(false);
-                                }
-                            }).unwrap();
-                        },
-                        Err(TryRecvError::Empty) => {
-                            println!("TryRecvError::Empty");
-                            thread::sleep(Duration::from_millis(250));
-                        },
-                        Err(TryRecvError::Disconnected) => {
-                            println!("TryRecvError::Disconnected");
-                            break;
-                        }
-                    }
-                }
+            let ui_weak_monitor = ui.as_weak();
+            let is_new_task = Arc::clone(&is_new_task);
+            let downloaded_files_clone = Arc::clone(&downloaded_files);
+            let downloading_clone = Arc::clone(&downloading);
+            let handle_monitor = thread::spawn(move || {
+                download_monitor(is_new_task, downloaded_files_clone, downloading_clone, ui_weak_monitor, rx);
             });
+
+            // 收集线程
+            let mut thread_handles = thread_handles_download.lock().unwrap();
+            if let Some(handles) = thread_handles.as_mut() {
+                handles.push(handle_download);
+                handles.push(handle_monitor);
+            }
         }
     });
 
     window.run()
 }
 
-struct DownloadManagement {
-    downloaded_files: Arc<AtomicU32>,
-    pause: Arc<AtomicBool>,
-    cancel: Arc<AtomicBool>,
-    running: Arc<AtomicBool>,
-}
-
-impl DownloadManagement {
-    fn new() -> Self {
-        Self {
-            downloaded_files: Arc::new(AtomicU32::new(0)),
-            pause: Arc::new(AtomicBool::new(false)),
-            cancel: Arc::new(AtomicBool::new(false)),
-            running: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
+// 待下载文件信息
+#[derive(Debug)]
 struct WaitDownloadFile {
-    filename: String,
-    url: String,
+    save_path: String, // 保存路径
+    download_url: String, // 下载链接
 }
 
 impl WaitDownloadFile {
-    fn new(filename: String, url: String) -> Self {
-        Self { filename, url }
+    fn new(save_path: String, download_url: String) -> Self {
+        Self { save_path, download_url }
     }
 }
 
@@ -263,10 +236,11 @@ fn show_open_dialog() -> SharedString {
     rfd::FileDialog::new().pick_folder().map(|path| path.to_string_lossy().to_string().into()).unwrap_or_default()
 }
 
+// 解析M3U8，并把待下载文件放入队列中
 fn resolve_m3u8(
     m3u8_url: &SharedString,
     save_dir: &str,
-    retry: i32,
+    retry: u32,
     timeout: u64
 ) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
     let parsed_url = Url::parse(m3u8_url.as_str())?;
@@ -288,53 +262,169 @@ fn resolve_m3u8(
         }
     }
 
+    // 超时
     if is_timeout {
-        return Err("Connection timeout".into());
+        return Err("Connection timeout.".into());
     }
 
+    // 内容为空
     if contents.is_empty() {
-        return Err("Not valid M3U8 URL".into());
+        return Err("Not valid M3U8 URL.".into());
     }
 
     let m3u8_file = File::create(Path::new(save_dir).join("index.m3u8"))?;
     let mut writer = BufWriter::new(m3u8_file);
-    let mut wait_download_files: Vec<WaitDownloadFile> = Vec::new();
+    let mut wait_download_files: Vec<WaitDownloadFile> = Vec::new(); // 等待下载的文件列表
 
     for line in contents.lines() {
         if line.starts_with("#EXT-X-KEY") {
             let key = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
-            let replace_key = line.replace(key, "key.key");
-            let key_file = Path::new(save_dir).join(&replace_key).to_string_lossy().to_string();
-
-            let key_url = if key.starts_with("http://") || key.starts_with("https://") {
-                key.to_string()
-            } else {
-                base_url.join(line)?.to_string()
-            };
-
-            wait_download_files.push(WaitDownloadFile::new(key_file, key_url));
-            writeln!(writer, "{}", replace_key)?;
-            continue;
+            let (filename, url) = parse_m3u8_key_segment(&base_url, key)?;
+            wait_download_files.push(WaitDownloadFile::new(format!("{}\\{}", save_dir, filename), url));
+            writeln!(writer, "{}", line.replace(key, &filename))?;
+        } else if !line.starts_with("#") && !line.trim().is_empty() {
+            let (filename, url) = parse_m3u8_key_segment(&base_url, line)?;
+            if !filename.trim().is_empty() {
+                wait_download_files.push(WaitDownloadFile::new(format!("{}\\{}", save_dir, filename), url));
+                writeln!(writer, "{}", filename)?;
+            }
+        } else {
+            if !line.trim().is_empty() {
+                writeln!(writer, "{}", line)?;
+            }
         }
-        
-        if !line.starts_with("#") {
-            let (filename, ts_name, url) = if line.starts_with("http://") || line.starts_with("https://") {
-                let ts_name = line.split("/").last().unwrap();
-                let filename = Path::new(save_dir).join(&ts_name).to_string_lossy().to_string();
-                (filename, ts_name, line.to_string())
-            } else {
-                let url = base_url.join(line)?.to_string();
-                let filename = Path::new(save_dir).join(line).to_string_lossy().to_string();
-                (filename, line, url)
-            };
+    }
 
-            wait_download_files.push(WaitDownloadFile::new(filename, url));
-            writeln!(writer, "{}", ts_name)?;
-            continue;
-        }
-
-        writeln!(writer, "{}", line)?;
+    // 内容未提取到可下载的文件
+    if wait_download_files.is_empty() {
+        return Err("No downloadable files found.".into());
     }
 
     Ok(wait_download_files)
+}
+
+// 解析m3u8里面的key与切片
+fn parse_m3u8_key_segment(base_url: &Url, s: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let url = if s.starts_with("http://") || s.starts_with("https://") {
+        Url::parse(s)?
+    } else {
+        base_url.join(s)?
+    };
+
+    let filename = url.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .ok_or_else(|| format!("URL path has no filename: {}", url))? 
+        .to_string();
+
+    Ok((filename, url.to_string()))
+}
+
+// 枚举通道消息
+#[derive(Debug)]
+enum ChannelMessage {
+    Pause(String),
+    Retry(SharedString),
+    Schedule(i32, u32), // 进度，百分比和已下载文件数
+}
+
+// 下载监控
+fn download_monitor(
+    is_new_task: Arc<AtomicBool>,
+    downloaded_files: Arc<Mutex<Vec<String>>>,
+    downloading: Arc<AtomicBool>,
+    ui_weak: slint::Weak<AppWindow>,
+    receiver: mpsc::Receiver<ChannelMessage>
+) {
+    loop {
+        match receiver.try_recv() {
+            Ok(channel_message) => {
+                // 通道消息类型
+                match channel_message {
+                    // 下载进度
+                    ChannelMessage::Schedule(progress, percent) => {
+                        // println!("progress:{}, percent:{}", progress, percent);
+                        if downloading.load(Ordering::Relaxed) {
+                            ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.set_progress(progress);
+                                ui.set_percent(percent as f32 / 100.0);
+                            }).unwrap();
+                        }
+                        
+                        // 下载完成
+                        if percent >= 100 {
+                            is_new_task.store(true, Ordering::Relaxed);
+                            downloading.store(false, Ordering::Relaxed);
+                            downloaded_files.lock().unwrap().clear();
+                            ui_weak.upgrade_in_event_loop(move |ui| {
+                                reset_ui_with_default(&ui, SharedString::from("Download finished."), false);
+                            }).unwrap();
+                        }
+                    },
+                    // 暂停
+                    ChannelMessage::Pause(msg) => {
+                        // 同暂停按钮事件回调一致
+                        is_new_task.store(false, Ordering::Relaxed);
+                        downloading.store(false, Ordering::Relaxed);
+                        ui_weak.upgrade_in_event_loop(move |ui| {
+                            set_ui_with_pause(&ui, SharedString::from(msg));
+                        }).unwrap();
+                        // break;
+                    },
+                    // 重试
+                    ChannelMessage::Retry(msg) => {
+                        ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.set_message(msg);
+                        }).unwrap();
+                    }
+                }
+            },
+            Err(TryRecvError::Empty) => {
+                // println!("TryRecvError::Empty");
+                thread::sleep(Duration::from_millis(250));
+            },
+            Err(TryRecvError::Disconnected) => {
+                println!("TryRecvError::Disconnected");
+                break;
+            }
+        }
+    }
+}
+
+// 释放线程
+fn release_threads(thread_handles: &Arc<Mutex<Option<Vec<thread::JoinHandle<()>>>>>) {
+    let thread_handles = thread_handles.lock().unwrap().take();
+    if let Some(handles) = thread_handles {
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+}
+
+// 重置UI变量
+fn reset_ui_with_default(
+    ui: &AppWindow,
+    message: SharedString,
+    is_reset_progress: bool
+) {
+    ui.set_enable_start_btn(true);
+    ui.set_enable_pause_btn(false);
+    ui.set_enable_cancel_btn(false);
+    ui.set_is_pause(false);
+    ui.set_message(message);
+
+    // 清空下载进度
+    if is_reset_progress {
+        ui.set_total(SharedString::new());
+        ui.set_progress(0);
+        ui.set_percent(0.0);
+    }
+}
+
+// 暂停时UI变量状态
+fn set_ui_with_pause(ui: &AppWindow, message: SharedString) {
+    ui.set_message(message);
+    ui.set_is_pause(true);
+    ui.set_enable_start_btn(true);
+    ui.set_enable_pause_btn(false);
+    ui.set_enable_cancel_btn(true);
 }
