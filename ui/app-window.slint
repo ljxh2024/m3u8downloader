@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
     out property <string> m3u8-url: "http://localhost/res/videos/m3u8/8/index.m3u8";
     // out property <string> video-name;
     out property <string> video-name: "m3u8test";
-    out property <string> threads: 8;
+    out property <string> threads: 4;
     out property <string> retry: 3;
     out property <string> timeout: 5;
 
@@ -228,7 +228,7 @@ export component AppWindow inherits Window {
                     text: "Github:";
                 }
                 Text {
-                    y: 210px;
+                    y: 200px;
                     text: root.github;
                     color: #007fff;
                     TouchArea {

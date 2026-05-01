@@ -34,7 +34,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             tx_start.send(ChannelMessage::StartDownload(RequestData {
                 save_path: create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap(),
                 m3u8_url: ui.get_m3u8_url().into(),
-                threads: ui.get_threads().parse::<usize>().unwrap_or(8),
+                threads: ui.get_threads().parse::<usize>().unwrap_or(4),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
                 is_convert: ui.get_is_convert(),
