@@ -2764,6 +2764,7 @@ dependencies = [
 name = "m3u8downloader"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "reqwest",
  "rfd",
  "slint",

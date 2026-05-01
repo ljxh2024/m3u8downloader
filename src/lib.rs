@@ -1,15 +1,18 @@
 pub mod thread_pool;
 
-use std::{fs::{self, File, OpenOptions}, io::{BufWriter, Write}, os::windows::process::CommandExt, path::Path, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
+use std::{fs::{self, File, OpenOptions}, io::{BufWriter, Write}, os::windows::process::CommandExt, path::{Path, PathBuf}, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
 use slint::SharedString;
 use url::Url;
 use reqwest::blocking::Client;
 use crate::thread_pool::ThreadPool;
+use regex::Regex;
 
 slint::include_modules!();
 
 // 下载失败的文件名
 const FAILED_FILENAME: &str = "failed_link.txt";
+// M3U8文件名
+const M3U8_FILENAME: &str = "index.m3u8";
 
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
@@ -29,7 +32,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ui.set_message(SharedString::from("Parsing..."));
 
             tx_start.send(ChannelMessage::StartDownload(RequestData {
-                save_directory: format!("{}\\{}", ui.get_work_dir(), ui.get_video_name()),
+                save_path: create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap(),
                 m3u8_url: ui.get_m3u8_url().into(),
                 user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
                 threads: ui.get_threads().parse::<usize>().unwrap_or(8),
@@ -119,7 +122,7 @@ struct WaitDownloadFile {
     // 切片名称
     slice_name: String,
     // 保存目录
-    save_directory: String,
+    save_path: PathBuf,
     // 下载链接
     download_url: String,
 }
@@ -155,7 +158,7 @@ impl DownloadTask {
 // 请求参数
 #[derive(Debug, Clone)]
 struct RequestData {
-    save_directory: String,
+    save_path: PathBuf,
     m3u8_url: String,
     user_agent: String,
     threads: usize,
@@ -177,7 +180,7 @@ fn loop_receive_message(
     // 一个线程、一个接收者时使用while let
     while let Ok(channel_message) = rx.recv() {
         match channel_message {
-            // 启动下载任务
+            // 启动下载
             ChannelMessage::StartDownload(request_data) => {
                 let tx1 = tx.clone();
                 let tx2 = tx.clone();
@@ -189,12 +192,19 @@ fn loop_receive_message(
                 download_task1.is_parse_fail.store(false, Ordering::Relaxed);
                 download_task1.failed_files.lock().unwrap().clear();
 
-                // 是否转MP4参数
-                let (convert_args, is_delete_slice, save_directory) = if request_data.is_convert {
-                    (vec!["-i".to_string(), format!("{}\\index.m3u8", request_data.save_directory), "-c".to_string(), "copy".to_string(), format!("{}\\output.mp4", request_data.save_directory)],
-                    request_data.is_delete_slice, request_data.save_directory.to_string())
+                // 构建转换MP4参数
+                let (convert_args, is_delete_slice, save_path) = if request_data.is_convert {
+                    (vec![
+                        "-allowed_extensions".to_string(),
+                        "ALL".to_string(),
+                        "-i".to_string(),
+                        request_data.save_path.join(M3U8_FILENAME).to_str().unwrap().to_string(),
+                        "-c".to_string(),
+                        "copy".to_string(),
+                        request_data.save_path.join("output.mp4").to_str().unwrap().to_string()
+                    ], request_data.is_delete_slice, request_data.save_path.clone())
                 } else {
-                    (vec![], request_data.is_delete_slice, String::new())
+                    (vec![], false, PathBuf::new())
                 };
 
                 let task_thread = thread::spawn(move || {
@@ -239,33 +249,40 @@ fn loop_receive_message(
                         return;
                     }
 
-                    // 所有切片下载结束
-                    if download_task1.file_total_nums.load(Ordering::Relaxed) == download_task1.downloaded_files.lock().unwrap().len() {
+                    // 已下载的文件
+                    let downloaded_files = {
+                        let guard = download_task1.downloaded_files.lock().unwrap();
+                        guard.clone()
+                    };
+                    // 所有切片全被下载
+                    if download_task1.file_total_nums.load(Ordering::Relaxed) == downloaded_files.len() {
                         let mut msg = String::from("Download successful!");
                         // 不为空=转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
                                 ui.set_message("Converting to mp4 now...".into());
                             }).unwrap();
-                            if Command::new("ffmpeg").args(convert_args).creation_flags(0x08000000).output().unwrap().status.success() {
+                            // 使用ffmpeg转MP4
+                            let cmd = Command::new("ffmpeg").args(convert_args).creation_flags(0x08000000).output().unwrap();
+                            if cmd.status.success() {
                                 msg = String::from("Successfully converted to mp4");
-                                // 是否删除切片
+                                // 删除切片
                                 if is_delete_slice  {
-                                    let downloaded_files = download_task1.downloaded_files.lock().unwrap();
                                     let mut delete_ok = true;
+
                                     for slice_name in downloaded_files.iter() {
-                                        let file = format!("{}\\{}", save_directory, slice_name);
-                                        let file = Path::new(&file);
-                                        if file.is_file() && fs::remove_file(file).is_err() {
+                                        let slice_filepath = save_path.join(slice_name);
+                                        if slice_filepath.is_file() && fs::remove_file(slice_filepath).is_err() {
                                             msg.push_str(", but Failed to delete the slice.");
                                             delete_ok = false;
                                             break;
                                         }
                                     }
+                                    
                                     if delete_ok {
                                         msg.push_str(" and delete slice.");
                                         // 同时删除M3U8
-                                        let _ = fs::remove_file(format!("{}\\index.m3u8", save_directory));
+                                        let _ = fs::remove_file(save_path.join(M3U8_FILENAME));
                                     }
                                 }
                             } else {
@@ -320,12 +337,6 @@ fn loop_receive_message(
 
 // 解析M3U8，并把待下载文件放入队列中
 fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
-    // 创建视频目录
-    let save_path = Path::new(&request_data.save_directory);
-    if !save_path.is_dir() {
-        fs::create_dir(save_path)?;
-    }
-
     let base_url = Url::parse(&request_data.m3u8_url)?.join(".")?;
     let mut contents = String::new();
     let mut is_timeout = true;
@@ -357,7 +368,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
         return Err("Content is empty.".into());
     }
 
-    let m3u8_file = File::create(Path::new(&request_data.save_directory).join("index.m3u8"))?;
+    let m3u8_file = File::create(request_data.save_path.join(M3U8_FILENAME))?;
     let mut writer = BufWriter::new(&m3u8_file);
     let mut wait_download_files: Vec<WaitDownloadFile> = vec![];
 
@@ -372,7 +383,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
             let (key_name, url) = parse_m3u8_key_segment(&base_url, key)?;
             wait_download_files.push(WaitDownloadFile {
                 slice_name: key_name.to_owned(),
-                save_directory: request_data.save_directory.to_owned(),
+                save_path: request_data.save_path.to_owned(),
                 download_url: url,
             });
             writeln!(writer, "{}", line.replace(key, &key_name))?;
@@ -384,7 +395,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
             if !slice_name.trim().is_empty() {
                 wait_download_files.push(WaitDownloadFile{
                     slice_name: slice_name.to_owned(),
-                    save_directory: request_data.save_directory.to_owned(),
+                    save_path: request_data.save_path.to_owned(),
                     download_url: url,
                 });
                 writeln!(writer, "{}", slice_name.to_owned())?;
@@ -420,6 +431,7 @@ fn parse_m3u8_key_segment(base_url: &Url, s: &str) -> Result<(String, String), B
     Ok((filename, url.to_string()))
 }
 
+// 解析并下载
 fn parse_download(
     download_task: Arc<DownloadTask>,
     tx: mpsc::Sender<ChannelMessage>,
@@ -439,11 +451,10 @@ fn parse_download(
     let tx1 = tx.clone();
     tx1.send(ChannelMessage::DownloadSlicing(file_total_nums)).unwrap();
 
-    // 若已存在下载失败文件，则清空内容
-    let failed_filename = format!("{}\\{}", request_data.save_directory, FAILED_FILENAME);
-    let failed_link_file = Path::new(&failed_filename);
-    if failed_link_file.is_file() {
-        fs::remove_file(failed_link_file).unwrap();
+    // 处理存储下载失败的文件
+    let failed_filepath  = request_data.save_path.join(FAILED_FILENAME);
+    if failed_filepath.is_file() {
+        fs::remove_file(failed_filepath).unwrap();
     }
 
     let pool = ThreadPool::new(request_data.threads);
@@ -469,9 +480,8 @@ fn parse_download(
                 if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
                     // :todo 待优化错误处理
                     let content = resp.bytes().unwrap();
-                    let mut file = File::create(Path::new(&item.save_directory).join(&item.slice_name)).unwrap();
+                    let mut file = File::create(item.save_path.join(&item.slice_name)).unwrap();
                     file.write_all(&content).unwrap();
-                    // thread::sleep(Duration::from_millis(200));
                     // 记录已下载的文件
                     let n = {
                         let mut downloaded = download_task_clone.downloaded_files.lock().unwrap();
@@ -490,7 +500,7 @@ fn parse_download(
             if !is_finish {
                 // 记录下载失败的切片
                 download_task_clone.failed_files.lock().unwrap().push(item.download_url.to_string());
-                let failed_link_file = Path::new(&item.save_directory).join(FAILED_FILENAME);
+                let failed_link_file = &item.save_path.join(FAILED_FILENAME);
                 let mut file = OpenOptions::new().append(true).create(true).open(failed_link_file).unwrap();
                 if file.metadata().unwrap().len() > 0 {
                     file.write_all(b"\n").unwrap();
@@ -510,20 +520,34 @@ fn reset_download_status(
     message: SharedString,
     is_cancel_reset: bool,
 ) {
+    // 非取消下载时计算失败文件数
     let failed_file_nums = if !is_cancel_reset {
         download_task.failed_files.lock().unwrap().len()
     } else {
         0
     };
 
-    let message: SharedString = if failed_file_nums > 0 { format!("The download is complete, but {} slice{} failed to download.", failed_file_nums, if failed_file_nums > 1 { "s" } else { "" }).into() } else { message };
+    // 构建最终消息
+    let final_message = if failed_file_nums > 0 {
+        format!(
+            "{} slice{} failed to download.",
+            failed_file_nums,
+            if failed_file_nums > 1 { "s" } else { "" }
+        ).into()
+    } else {
+        message
+    };
     
-    download_task.downloaded_files.lock().unwrap().clear();
+    // 快速释放该锁
+    {
+        download_task.downloaded_files.lock().unwrap().clear();
+    }
+
     download_task.is_new_task.store(true, Ordering::Relaxed);
     download_task.file_total_nums.store(0, Ordering::Relaxed);
 
     ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.set_message(message);
+        ui.set_message(final_message);
         ui.set_enable_start_btn(true);
         ui.set_enable_pause_btn(false);
         ui.set_enable_cancel_btn(false);
@@ -536,4 +560,32 @@ fn reset_download_status(
             ui.set_downloaded_nums(0);
         }
     }).unwrap();
+}
+
+// 安全的创建保存目录
+fn create_safe_save_path(work_dir: &SharedString, video_name: &SharedString) -> Option<PathBuf> {
+    if video_name.is_empty() {
+        return None;
+    }
+
+    // 只取文件名部分（去除路径）
+    let safe_name = Path::new(video_name).file_name().and_then(|n| n.to_str()).unwrap_or(video_name);
+
+    // 移除非法字符
+    let re = Regex::new(r#"[<>:"/\\|?*]"#).unwrap();
+    let clean_name = re.replace_all(safe_name, "_");
+    // 中文下最多50个字符
+    let clean_name = if clean_name.len() > 150 {
+        &clean_name[..150]
+    } else {
+        &clean_name
+    };
+
+    // 创建保存目录
+    let save_path = Path::new(work_dir).join(clean_name);
+    if !save_path.is_dir() {
+        fs::create_dir(&save_path).unwrap();
+    }
+
+    Some(save_path)
 }
