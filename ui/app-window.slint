@@ -31,10 +31,9 @@ export component AppWindow inherits Window {
 
     // 输入组（后端只读）
     // out property <string> m3u8-url;
-    out property <string> m3u8-url: "http://localhost/res/videos/m3u8/8/index/.m3u8";
+    out property <string> m3u8-url: "http://localhost/res/videos/m3u8/8/index.m3u8";
     // out property <string> video-name;
     out property <string> video-name: "m3u8test";
-    out property <string> user-agent;
     out property <string> threads: 8;
     out property <string> retry: 3;
     out property <string> timeout: 5;
@@ -54,8 +53,6 @@ export component AppWindow inherits Window {
         Tab {
             title: "Home";
             VerticalBox {
-                // padding: 8px;
-                // spacing: 4px;
                 // 输入组件，3列
                 GridLayout {
                     spacing: 6px;
@@ -117,19 +114,6 @@ export component AppWindow inherits Window {
                             text <=> root.m3u8-url;
                             colspan: 2;
                             enabled: !root.is-downloading;
-                        }
-                    }
-                    // 请求头
-                    Row {
-                        Rectangle {
-                            Text {
-                                text: "User Agent";
-                            }
-                        }
-                        LineEdit {
-                            text <=> root.user-agent;
-                            colspan: 2;
-                            enabled: !root.is-downloading || root.is-pause;
                         }
                     }
                     // 线程数
@@ -220,7 +204,7 @@ export component AppWindow inherits Window {
                         mouse-cursor: pointer;
                         clicked => { root.open-failed-file(); }
                         Text {
-                            text: "Open failed file";
+                            text: "Failed file";
                             color: #3399ff;
                         }
                     }
@@ -232,15 +216,15 @@ export component AppWindow inherits Window {
             title: "About";
             Rectangle {
                 Text {
-                    y: 150px;
+                    y: 140px;
                     text: "M3U8Downloader";
                 }
                 Text {
-                    y: 170px;
+                    y: 160px;
                     text: "Version 0.1.0";
                 }
                 Text {
-                    y: 190px;
+                    y: 180px;
                     text: "Github:";
                 }
                 Text {

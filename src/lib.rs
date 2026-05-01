@@ -34,7 +34,6 @@ pub fn run() -> Result<(), slint::PlatformError> {
             tx_start.send(ChannelMessage::StartDownload(RequestData {
                 save_path: create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap(),
                 m3u8_url: ui.get_m3u8_url().into(),
-                user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
                 threads: ui.get_threads().parse::<usize>().unwrap_or(8),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
@@ -91,7 +90,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
         let ui_weak = window.as_weak();
         move || {
             let ui = ui_weak.unwrap();
-            Command::new("explorer").arg(Path::new(&format!("/select,{}\\{}\\{}", ui.get_work_dir(), ui.get_video_name(), FAILED_FILENAME))).spawn().unwrap().wait().unwrap();
+            Command::new("explorer")
+                .arg(Path::new("/select,")
+                    .join(ui.get_work_dir())
+                    .join(ui.get_video_name())
+                    .join(FAILED_FILENAME))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap();
         }
     });
 
@@ -160,7 +167,6 @@ impl DownloadTask {
 struct RequestData {
     save_path: PathBuf,
     m3u8_url: String,
-    user_agent: String,
     threads: usize,
     retry: u32,
     timeout: u64,
@@ -343,10 +349,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(request_data.timeout))
         .timeout(Duration::from_secs(100))
-        .danger_accept_invalid_certs(true)
-        .user_agent(request_data.user_agent)
-        .build()
-        .unwrap();
+        .build()?;
 
     for attemp in 0..request_data.retry {
         if let Ok(res) = client.get(&request_data.m3u8_url).send() && res.status().is_success() {
@@ -463,10 +466,7 @@ fn parse_download(
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(request_data.timeout))
             .timeout(Duration::from_secs(100))
-            .danger_accept_invalid_certs(true)
-            .user_agent(&request_data.user_agent)
-            .build()
-            .unwrap();
+            .build()?;
         let tx2 = tx.clone();
 
         pool.execute(move || {
@@ -530,7 +530,7 @@ fn reset_download_status(
     // 构建最终消息
     let final_message = if failed_file_nums > 0 {
         format!(
-            "{} slice{} failed to download.",
+            "{} file{} cannot be downloaded",
             failed_file_nums,
             if failed_file_nums > 1 { "s" } else { "" }
         ).into()
