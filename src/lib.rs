@@ -92,10 +92,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
 
     // 监控线程，避免阻塞UI
-    let rx1 = Arc::new(Mutex::new(rx));
     let ui_weak = window.as_weak();
     thread::spawn(move || {
-        loop_receive_message(tx.clone(), rx1, ui_weak);
+        loop_receive_message(tx.clone(), rx, ui_weak);
     });
 
     window.run()
@@ -168,12 +167,14 @@ struct RequestData {
 // 启用新线程监控信道消息
 fn loop_receive_message(
     tx: mpsc::Sender<ChannelMessage>,
-    rx: Arc<Mutex<mpsc::Receiver<ChannelMessage>>>,
+    rx: mpsc::Receiver<ChannelMessage>,
     ui_weak: slint::Weak<AppWindow>,
 ) {
     let download_task = Arc::new(DownloadTask::new());
     let task_thread_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
-    while let Ok(channel_message) = rx.lock().unwrap().recv() {
+
+    // 一个线程、一个接收者时使用while let
+    while let Ok(channel_message) = rx.recv() {
         match channel_message {
             // 启动下载任务
             ChannelMessage::StartDownload(request_data) => {
@@ -309,7 +310,7 @@ fn loop_receive_message(
             ChannelMessage::RecycleTaskThead => {
                 if let Some(handle) = task_thread_handle.lock().unwrap().take() {
                     handle.join().unwrap();
-                    // println!("release");
+                    // println!("release task thread");
                 }
             }
         }
