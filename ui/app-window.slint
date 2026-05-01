@@ -1,236 +1,260 @@
-import { LineEdit, Button, ProgressIndicator, HorizontalBox, GroupBox, VerticalBox, ScrollView, StandardListView, ListView, CheckBox, TabWidget } from "std-widgets.slint";
+import {
+    TabWidget,
+    LineEdit,
+    Button,
+    VerticalBox,
+    HorizontalBox,
+    CheckBox,
+} from "std-widgets.slint";
 
 export component AppWindow inherits Window {
-  title: "m3u8downloader v0.1.0";
+    title: "M3U8Downloader";
+    
+    // 按钮组
+    in-out property <bool> enable-start-btn: true;
+    in-out property <bool> enable-pause-btn: false;
+    in-out property <bool> enable-cancel-btn: false;
 
-  in-out property <bool> enable-download-btn: true;
-  in-out property <bool> enable-pause-btn: false;
-  in-out property <bool> enable-continue-btn: false;
-  in-out property <bool> enable-cancel-btn: false;
-  in-out property <bool> is-downloading: false;
-  in-out property <bool> has-failed-file: false;
-  in-out property <bool> is-convert: false;
-  in-out property <bool> is-delete-slice: false;
-  in-out property <bool> is-pause: false;
-  in-out property <string> work-dir: "F:\\temp";
-  in-out property <string> message;
-  in-out property <int> total_nums;
-  in-out property <int> downloaded_nums;
- 
-  out property <string> video-dir: "m3u8test";
-  out property <string> m3u8-url: "https://vip.dytt-cine.com/20250719/39624_ae83e4d8/3000k/hls/mixed.m3u8";
-  out property <string> request-header;
-  out property <string> threads: 4;
-  out property <string> retry: 3;
-  out property <string> timeout: 5;
+    // 状态组
+    in-out property <bool> is-downloading: false;
+    in-out property <bool> is-pause: false;
+    in-out property <bool> has-failed-file: false;
+    in-out property <bool> is-convert: false;
+    in-out property <bool> is-delete-slice: false;
 
-  callback select-dir();
-  callback start-download();
-  callback pause-download();
-  callback cancel-download();
-  callback open-failed-dir();
+    // 输入组（后端可读可写）
+    in-out property <string> work-dir;
+    // in-out property <string> work-dir:"F:\\temp";
+    in-out property <string> message;
+    in-out property <int> total_nums;
+    in-out property <int> downloaded_nums;
 
-  TabWidget {
-    Tab {
-      title: "Home";
-      VerticalLayout {
-    width: root.width;
-    padding: 8px;
-    spacing: 4px;
+    // 输入组（后端只读）
+    out property <string> m3u8-url;
+    // out property <string> m3u8-url:"http://localhost/res/videos/m3u8/8/index.m3u8";
+    out property <string> video-name;
+    // out property <string> video-name:"m3u8test";
+    out property <string> user-agent;
+    out property <string> threads: 4;
+    out property <string> retry: 3;
+    out property <string> timeout: 5;
 
-    GridLayout {
-      spacing: 6px;
-      Row {
-        Rectangle {
-          width: 110px;
-          Text {
-            text: "Working Directory";
-          }
-          Text {
-            x: 106px;
-            text: "*";
-            color: red;
-          }
-        }
-        LineEdit {
-          text <=> root.work-dir;
-          read-only: true;
-        }
-        Button {
-          enabled: !root.is-downloading;
-          text: "Change";
-          clicked => { root.select-dir(); }
-        }
-      }
+    out property <string> github: "https://github.com/ljxh2024/m3u8downloader";
 
-      Row {
-        Rectangle {
-          Text {
-            text: "M3U8 URL";
-          }
-          Text {
-            x: 85px;
-            text: "*";
-            color: red;
-          }
-        }
-        LineEdit {
-          text <=> root.m3u8-url;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
+    // 回调函数
+    callback select-dir();
+    callback open-failed-file();
+    callback start-download();
+    callback pause-download();
+    callback cancel-download();
 
-      Row {
-        Rectangle {
-          Text {
-            text: "Video Name";
-          }
-          Text {
-            x: 92px;
-            text: "*";
-            color: red;
-          }
-        }
-        LineEdit {
-          text <=> root.video-dir;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
-
-      Row {
-        Rectangle {
-          Text {
-            text: "Request Header";
-          }
-        }
-        LineEdit {
-          text <=> root.request-header;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
-
-      Row {
-        Rectangle {
-          Text {
-            text: "Threads";
-          }
-        }
-        LineEdit {
-          text <=> root.threads;
-          input-type: number;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
-
-      Row {
-        Rectangle {
-          Text {
-            text: "Retry";
-          }
-        }
-        LineEdit {
-          text <=> root.retry;
-          input-type: number;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
-
-      Row {
-        Rectangle {
-          Text {
-            text: "Timeout(s)";
-          }
-        }
-        LineEdit {
-          text <=> root.timeout;
-          input-type: number;
-          colspan: 2;
-          enabled: !root.is-downloading;
-        }
-      }
-    }
-
-    // 其他配置
-    VerticalBox {
-      // padding-top: 16px;
-      // padding-left: 14px;
-      CheckBox {
-        text: "Convert to MP4 after downloaded";
-        checked <=> root.is-convert;
-        enabled: !root.is-downloading;
-      }
-      CheckBox {
-        text: "Delete the slices after converted";
-        checked <=> root.is-delete-slice;
-        enabled: !root.is-downloading;
-      }
-    }
-
-    VerticalLayout {
-      // 按钮区域
-      HorizontalBox {
-        x: parent.width - 265px;
-        Button {
-          width: 80px;
-          text: root.is-pause ? "Continue" : "Download";
-          enabled: root.enable-download-btn && !root.work-dir.is-empty && !root.video-dir.is-empty && !root.m3u8-url.is-empty;
-          primary: true;
-          clicked => {
-            root.start-download();
-          }
-        }
-        Button {
-          width: 80px;
-          text: "Pause";
-          enabled: root.enable-pause-btn;
-          clicked => {
-            root.pause-download();
-          }
-        }
-        Button {
-          width: 80px;
-          text: "Cancel";
-          enabled: root.enable-cancel-btn;
-          clicked => {
-            root.cancel-download();
-          }
-        }
-      }
-      // 日志、进度区域
-      VerticalBox {
-        // padding: 0;
-        HorizontalBox {
-          padding: 0;
-          Text {
-            text: "Progress " + (root.total_nums > 0 ? root.downloaded_nums + " / " + root.total_nums : "");
-          }
-          Text {
-            text <=> root.message;
-            wrap: word-wrap;
-          }
-          // 查看下载失败的文件
-          if root.has-failed-file : TouchArea {
-            mouse-cursor: pointer;
-            Text {
-              text: "Open failed file";
-              color: #3399ff;
+    // 总布局
+    TabWidget {
+        // 首页
+        Tab {
+            title: "Home";
+            VerticalBox {
+                // padding: 8px;
+                // spacing: 4px;
+                // 输入组件，3列
+                GridLayout {
+                    spacing: 6px;
+                    // 工作目录
+                    Row {
+                        Rectangle {
+                            width: 104px;
+                            Text {
+                                text: "Working Directory";
+                            }
+                            Text {
+                                x: 102px;
+                                text: "*";
+                                color: red;
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.work-dir;
+                            read-only: true;
+                            enabled: !root.is-downloading;
+                        }
+                        Button {
+                            enabled: !root.is-downloading;
+                            text: "Change";
+                            clicked => { root.select-dir(); }
+                        }
+                    }
+                    // M3U8 URL
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "M3U8 URL";
+                            }
+                            Text {
+                                x: 80px;
+                                text: "*";
+                                color: red;
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.m3u8-url;
+                            colspan: 2;
+                            enabled: !root.is-downloading;
+                        }
+                    }
+                    // 视频名称
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "Video Name";
+                            }
+                            Text {
+                                x: 87px;
+                                text: "*";
+                                color: red;
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.video-name;
+                            colspan: 2;
+                            enabled: !root.is-downloading;
+                        }
+                    }
+                    // 请求头
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "User Agent";
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.user-agent;
+                            colspan: 2;
+                            enabled: !root.is-downloading || root.is-pause;
+                        }
+                    }
+                    // 线程数
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "Threads";
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.threads;
+                            input-type: number;
+                            colspan: 2;
+                            enabled: !root.is-downloading || root.is-pause;
+                        }
+                    }
+                    // 重试次数
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "Retry";
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.retry;
+                            input-type: number;
+                            colspan: 2;
+                            enabled: !root.is-downloading || root.is-pause;
+                        }
+                    }
+                    // 超时
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "Timeout(s)";
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.timeout;
+                            input-type: number;
+                            colspan: 2;
+                            enabled: !root.is-downloading || root.is-pause;
+                        }
+                    }
+                }
+                // 转换MP4选项
+                VerticalBox {
+                    CheckBox {
+                        text: "Convert to MP4 after downloaded";
+                        checked <=> root.is-convert;
+                        enabled: !root.is-downloading || root.is-pause;
+                    }
+                    CheckBox {
+                        text: "Delete the slices after converted";
+                        checked <=> root.is-delete-slice;
+                        enabled: !root.is-downloading || root.is-pause;
+                    }
+                }
+                // 按钮事件操作
+                HorizontalBox {
+                    Button {
+                        text: root.is-pause ? "Continue" : "Download";
+                        enabled: root.enable-start-btn && !root.work-dir.is-empty && !root.video-name.is-empty && !root.m3u8-url.is-empty;
+                        primary: true;
+                        clicked => { root.start-download(); }
+                    }
+                    Button {
+                        text: "Pause";
+                        enabled: root.enable-pause-btn;
+                        clicked => { root.pause-download(); }
+                    }
+                    Button {
+                        text: "Cancel";
+                        enabled: root.enable-cancel-btn;
+                        clicked => { root.cancel-download(); }
+                    }
+                }
+                // 进度、打开失败文件
+                HorizontalBox {
+                    Text {
+                        text: "Progress " + (root.total_nums > 0 ? root.downloaded_nums + " / " + root.total_nums : "");
+                    }
+                    Text {
+                        text: root.message;
+                        wrap: word-wrap;
+                    }
+                    if root.has-failed-file : TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-failed-file(); }
+                        Text {
+                            text: "Open failed file";
+                            color: #3399ff;
+                        }
+                    }
+                }
             }
-            clicked => {
-              root.open-failed-dir();
-            }
-          }
         }
-      }
+        // 关于页
+        Tab {
+            title: "About";
+            Rectangle {
+                Text {
+                    y: 150px;
+                    text: "M3U8Downloader";
+                }
+                Text {
+                    y: 170px;
+                    text: "Version 0.1.0";
+                }
+                Text {
+                    y: 190px;
+                    text: "Github:";
+                }
+                Text {
+                    y: 210px;
+                    text: root.github;
+                    color: #007fff;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Platform.open-url(root.github);
+                        }
+                    }
+                }
+            }
+        }
     }
-  }
-    }
-    Tab {
-      title: "About";
-    }
-  }
 }

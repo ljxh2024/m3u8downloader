@@ -1,12 +1,15 @@
 pub mod thread_pool;
 
-use std::{fs::{self, File, OpenOptions}, io::{BufWriter, Write}, os::windows::process::CommandExt, path::Path, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc::{self, TryRecvError}}, thread, time::{Duration, Instant}};
+use std::{fs::{self, File, OpenOptions}, io::{BufWriter, Write}, os::windows::process::CommandExt, path::Path, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
 use slint::SharedString;
 use url::Url;
 use reqwest::blocking::Client;
 use crate::thread_pool::ThreadPool;
 
 slint::include_modules!();
+
+// 下载失败的文件名
+const FAILED_FILENAME: &str = "failed_link.txt";
 
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
@@ -20,18 +23,18 @@ pub fn run() -> Result<(), slint::PlatformError> {
         move || {
             let ui = ui_weak.unwrap();
 
-            ui.set_enable_download_btn(false);
+            ui.set_enable_start_btn(false);
             ui.set_is_downloading(true);
             ui.set_has_failed_file(false);
             ui.set_message(SharedString::from("Parsing..."));
 
-            tx_start.send(ChannelMessage::Start(DownloadConfig {
-                work_dir: ui.get_work_dir(),
-                video_dir: ui.get_video_dir(),
+            tx_start.send(ChannelMessage::StartDownload(RequestData {
+                save_directory: format!("{}\\{}", ui.get_work_dir(), ui.get_video_name()),
+                m3u8_url: ui.get_m3u8_url().into(),
+                user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
                 threads: ui.get_threads().parse::<usize>().unwrap_or(4),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
-                m3u8_url: ui.get_m3u8_url(),
                 is_convert: ui.get_is_convert(),
                 is_delete_slice: ui.get_is_delete_slice(),
             })).unwrap();
@@ -80,147 +83,19 @@ pub fn run() -> Result<(), slint::PlatformError> {
     });
 
     // 打开目录
-    window.on_open_failed_dir({
+    window.on_open_failed_file({
         let ui_weak = window.as_weak();
         move || {
             let ui = ui_weak.unwrap();
-            Command::new("explorer").arg(Path::new(&format!("/select,{}\\{}\\failed_link.txt", ui.get_work_dir(), ui.get_video_dir()))).spawn().unwrap();
+            Command::new("explorer").arg(Path::new(&format!("/select,{}\\{}\\{}", ui.get_work_dir(), ui.get_video_name(), FAILED_FILENAME))).spawn().unwrap().wait().unwrap();
         }
     });
 
-    // 任务调度/UI非阻塞更新线程
+    // 监控线程，避免阻塞UI
+    let rx1 = Arc::new(Mutex::new(rx));
     let ui_weak = window.as_weak();
     thread::spawn(move || {
-        let downloader = Arc::new(Downloader::new());
-        loop {
-            match rx.try_recv() {
-                Ok(channel_message) => {
-                    // 通道消息类型
-                    match channel_message {
-                        // 已下载文件数
-                        ChannelMessage::Downloaded(nums) => {
-                            ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.set_downloaded_nums(nums);
-                            }).unwrap();
-                        },
-                        // 处理下载
-                        ChannelMessage::Start(download_config) => {
-                            let tx_monitor = tx.clone();
-                            let downloader_monitor = Arc::clone(&downloader);
-                            let ui_weak_clone = ui_weak.clone();
-                            // 启动新线程下载,避免阻塞UI更新
-                            thread::spawn(move || {
-                                let start = Instant::now();
-                                let downloader_task = Arc::clone(&downloader_monitor);
-                                let ui_weak_task = ui_weak_clone.clone();
-
-                                // 下载成功转MP4
-                                let args = if download_config.is_convert {
-                                    let save_dir = format!("{}\\{}", download_config.work_dir, download_config.video_dir);
-                                    vec!["-i".to_string(), format!("{}\\index.m3u8", save_dir), "-c".to_string(), "copy".to_string(), format!("{}\\output.mp4", save_dir)]
-                                } else {
-                                    vec![]
-                                };
-
-                                let handle = thread::spawn(move || {
-                                    if let Err(e) = start_download(tx_monitor, downloader_task, download_config) {
-                                        let err_msg = e.to_string();
-                                        println!("{err_msg}");
-                                        ui_weak_task.upgrade_in_event_loop(move |ui| {
-                                            ui.set_message(SharedString::from(err_msg));
-                                        }).unwrap();
-                                    };
-                                });
-                                handle.join().unwrap();
-                                let duration = start.elapsed();
-                                println!("duration:{:.2}", duration.as_secs_f64());
-
-                                // println!("is_pause:{}", downloader_monitor.is_pause.load(Ordering::Relaxed));
-                                // 暂停成功后清理
-                                if downloader_monitor.is_pause.load(Ordering::Relaxed) {
-                                    downloader_monitor.is_new_download.store(false, Ordering::Relaxed);
-                                    ui_weak_clone.upgrade_in_event_loop(move |ui| {
-                                        ui.set_message(SharedString::from("Paused."));
-                                        ui.set_enable_download_btn(true);
-                                        ui.set_is_pause(true);
-                                    }).unwrap();
-                                } else if downloader_monitor.is_cancel.load(Ordering::Relaxed) {
-                                    // 下载中的取消处理
-                                    reset_download_status(&ui_weak_clone, &downloader_monitor, SharedString::from("Canceled."), true);
-                                } else {
-                                    // if is_success {
-                                    //     let mut msg: &str = "Download Finished";
-                                    //     if !args.is_empty() {
-                                    //         ui_weak_clone.upgrade_in_event_loop(move |ui| {
-                                    //             ui.set_message(SharedString::from("Converting to mp4..."));
-                                    //         }).unwrap();
-                                    //         if Command::new("ffmpeg").args(&args).creation_flags(0x08000000).output().unwrap().status.success() {
-                                    //             msg = "Successfully converted to mp4.";
-                                    //             // :todo
-                                    //             // let f = downloader.finished_files.lock().unwrap(); todo
-                                    //         } else {
-                                    //             msg = "Unable to convert to mp4.";
-                                    //         }
-                                    //     }
-                                    //     reset_download_status(&ui_weak_clone, &downloader_monitor, SharedString::from(msg), false);
-                                    // }
-                                    // reset_download_status(&ui_weak_clone, &downloader_monitor, SharedString::from("Download Finished."), false);
-                                    let mut msg: &str = "Download Finished";
-                                    if !args.is_empty() {
-                                        ui_weak_clone.upgrade_in_event_loop(move |ui| {
-                                            ui.set_message(SharedString::from("Converting to mp4..."));
-                                        }).unwrap();
-                                        if Command::new("ffmpeg").args(&args).creation_flags(0x08000000).output().unwrap().status.success() {
-                                            msg = "Successfully converted to mp4.";
-                                            // :todo
-                                            // let f = downloader.finished_files.lock().unwrap(); todo
-                                        } else {
-                                            msg = "Unable to convert to mp4.";
-                                        }
-                                    }
-                                    reset_download_status(&ui_weak_clone, &downloader_monitor, SharedString::from(msg), false);
-                                }
-                            });
-                        },
-                        // 解析完M3U8,开始下载key及切片
-                        ChannelMessage::Downloading(total_nums) => {
-                            downloader.is_pause.store(false, Ordering::Relaxed);
-                            downloader.is_cancel.store(false, Ordering::Relaxed);
-
-                            ui_weak.upgrade_in_event_loop(move |ui| {
-                                ui.set_is_pause(false);
-                                ui.set_enable_download_btn(false);
-                                ui.set_enable_pause_btn(true);
-                                ui.set_enable_cancel_btn(true);
-                                ui.set_total_nums(total_nums);
-                                ui.set_message(SharedString::from("Downloading..."));
-                            }).unwrap();
-                        },
-                        // 暂停
-                        ChannelMessage::Pause => {
-                            println!("ChannelMessage::Pause");
-                            downloader.is_pause.store(true, Ordering::Relaxed);
-                        },
-                        // 取消(分下载中的取消和暂停中的取消)
-                        ChannelMessage::Cancel => {
-                            println!("ChannelMessage::Cancel");
-                            downloader.is_cancel.store(true, Ordering::Relaxed);
-                            if downloader.is_pause.load(Ordering::Relaxed) {
-                                reset_download_status(&ui_weak, &downloader, SharedString::from("Canceled."), true);
-                            }
-                        }
-                    }
-                },
-                Err(TryRecvError::Empty) => {
-                    // println!("TryRecvError::Empty");
-                    // thread::sleep(Duration::from_millis(200));
-                },
-                Err(TryRecvError::Disconnected) => {
-                    // println!("TryRecvError::Disconnected");
-                    break;
-                }
-            }
-        }
+        loop_receive_message(tx.clone(), rx1, ui_weak);
     });
 
     window.run()
@@ -229,130 +104,283 @@ pub fn run() -> Result<(), slint::PlatformError> {
 // 枚举通道消息
 #[derive(Debug)]
 enum ChannelMessage {
-    Start(DownloadConfig),
-    Downloading(i32), // 参数为总文件数
-    Downloaded(i32), // 参数为已下载文件数
+    StartDownload(RequestData),
+    DownloadSlicing(usize),
     Pause,
     Cancel,
-    // Downloaded(u32), // 已下载文件数
+    // 已下载文件数
+    Downloaded(i32),
+    RecycleTaskThead,
 }
 
 // 待下载文件信息
 #[derive(Debug)]
 struct WaitDownloadFile {
-    filename: String, // 文件名
-    save_path: String, // 保存目录
-    download_url: String, // 下载链接
+    // 切片名称
+    slice_name: String,
+    // 保存目录
+    save_directory: String,
+    // 下载链接
+    download_url: String,
 }
 
-impl WaitDownloadFile {
-    fn new(filename:String, save_path: String, download_url: String) -> Self {
-        Self {
-            filename,
-            save_path,
-            download_url,
-        }
-    }
-}
-
-// 下载队列信息
-struct Downloader {
-    is_new_download: AtomicBool,
+// 下载管理
+struct DownloadTask {
+    is_new_task: AtomicBool,
     is_pause: AtomicBool,
     is_cancel: AtomicBool,
+    // 是否解析M3U8失败
+    is_parse_fail: AtomicBool,
     file_total_nums: AtomicUsize,
-    finished_files: Mutex<Vec<String>>, // 已下载完成的文件列表，存储文件名
-    failed_files: Mutex<Vec<String>>, // 下载失败的文件列表，存储url
+    // 已下载完成的文件列表，存储文件名
+    downloaded_files: Mutex<Vec<String>>,
+    // 下载失败的链接，存储url
+    failed_files: Mutex<Vec<String>>,
 }
 
-impl Downloader {
+impl DownloadTask {
     fn new() -> Self {
         Self {
-            is_new_download: AtomicBool::new(true),
+            is_new_task: AtomicBool::new(true),
             is_pause: AtomicBool::new(false),
             is_cancel: AtomicBool::new(false),
+            is_parse_fail: AtomicBool::new(false),
             file_total_nums: AtomicUsize::new(0),
-            finished_files: Mutex::new(vec![]),
+            downloaded_files: Mutex::new(vec![]),
             failed_files: Mutex::new(vec![]),
         }
     }
 }
 
-#[derive(Debug)]
-struct DownloadConfig {
-    work_dir: SharedString,
-    video_dir: SharedString,
+// 请求参数
+#[derive(Debug, Clone)]
+struct RequestData {
+    save_directory: String,
+    m3u8_url: String,
+    user_agent: String,
     threads: usize,
     retry: u32,
     timeout: u64,
-    m3u8_url: SharedString,
     is_convert: bool,
     is_delete_slice: bool,
 }
 
+// 启用新线程监控信道消息
+fn loop_receive_message(
+    tx: mpsc::Sender<ChannelMessage>,
+    rx: Arc<Mutex<mpsc::Receiver<ChannelMessage>>>,
+    ui_weak: slint::Weak<AppWindow>,
+) {
+    let download_task = Arc::new(DownloadTask::new());
+    let task_thread_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    while let Ok(channel_message) = rx.lock().unwrap().recv() {
+        match channel_message {
+            // 启动下载任务
+            ChannelMessage::StartDownload(request_data) => {
+                let tx1 = tx.clone();
+                let tx2 = tx.clone();
+                let download_task1 = Arc::clone(&download_task);
+                let ui_weak1 = ui_weak.clone();
+
+                download_task1.is_pause.store(false, Ordering::Relaxed);
+                download_task1.is_cancel.store(false, Ordering::Relaxed);
+                download_task1.is_parse_fail.store(false, Ordering::Relaxed);
+                download_task1.failed_files.lock().unwrap().clear();
+
+                // 是否转MP4参数
+                let (convert_args, is_delete_slice, save_directory) = if request_data.is_convert {
+                    (vec!["-i".to_string(), format!("{}\\index.m3u8", request_data.save_directory), "-c".to_string(), "copy".to_string(), format!("{}\\output.mp4", request_data.save_directory)],
+                    request_data.is_delete_slice, request_data.save_directory.to_string())
+                } else {
+                    (vec![], request_data.is_delete_slice, String::new())
+                };
+
+                let task_thread = thread::spawn(move || {
+                    let ui_weak2 = ui_weak1.clone();
+                    let download_task2 = Arc::clone(&download_task1);
+                    
+                    thread::spawn(move || {
+                        let download_task3 = Arc::clone(&download_task2);
+                        if let Err(e) = parse_download(download_task2, tx1, request_data) {
+                            download_task3.is_parse_fail.store(true, Ordering::Relaxed);
+
+                            let err_msg = e.to_string();
+                            ui_weak2.upgrade_in_event_loop(move |ui| {
+                                ui.set_message(err_msg.into());
+                                ui.set_is_downloading(false);
+                                ui.set_enable_start_btn(true);
+                            }).unwrap();
+                        }
+                    }).join().unwrap();
+
+                    // 通知准备回收本次任务线程
+                    tx2.send(ChannelMessage::RecycleTaskThead).unwrap();
+
+                    // 解析失败
+                    if download_task1.is_parse_fail.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    // 暂停处理
+                    if download_task1.is_pause.load(Ordering::Relaxed) {
+                        ui_weak1.upgrade_in_event_loop(move |ui| {
+                            ui.set_message("Paused.".into());
+                            ui.set_is_pause(true);
+                            ui.set_enable_start_btn(true);
+                        }).unwrap();
+                        return;
+                    }
+
+                    // 取消处理
+                    if download_task1.is_cancel.load(Ordering::Relaxed) {
+                        reset_download_status(&ui_weak1, &download_task1, SharedString::from("Canceled."), true);
+                        return;
+                    }
+
+                    // 所有切片下载结束
+                    if download_task1.file_total_nums.load(Ordering::Relaxed) == download_task1.downloaded_files.lock().unwrap().len() {
+                        // 不为空=转MP4
+                        if !convert_args.is_empty() {
+                            ui_weak1.upgrade_in_event_loop(move |ui| {
+                                ui.set_message("Download successful and Converting to mp4...".into());
+                            }).unwrap();
+                            let mut msg = String::from("Unable to convert to mp4.");
+                            if Command::new("ffmpeg").args(convert_args).creation_flags(0x08000000).output().unwrap().status.success() {
+                                msg = String::from("Successfully converted to mp4");
+                                // 是否删除切片
+                                if is_delete_slice  {
+                                    let downloaded_files = download_task1.downloaded_files.lock().unwrap();
+                                    let mut delete_ok = true;
+                                    for slice_name in downloaded_files.iter() {
+                                        let file = format!("{}\\{}", save_directory, slice_name);
+                                        let file = Path::new(&file);
+                                        if file.is_file() && fs::remove_file(file).is_err() {
+                                            msg.push_str(", but Failed to delete the slice.");
+                                            delete_ok = false;
+                                            break;
+                                        }
+                                    }
+                                    if delete_ok {
+                                        msg.push_str(" and delete slice.");
+                                        // 同时删除M3U8
+                                        let _ = fs::remove_file(format!("{}\\index.m3u8", save_directory));
+                                    }
+                                }
+                            }
+                            reset_download_status(&ui_weak1, &download_task1, SharedString::from(msg), false);
+                        }
+                    } else {
+                        // 有切片下载失败了
+                        reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
+                    }
+                });
+                *task_thread_handle.lock().unwrap() = Some(task_thread);
+            },
+            // 开始下载切片
+            ChannelMessage::DownloadSlicing(file_total_nums) => {
+                ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_message("Downloading...".into());
+                    ui.set_total_nums(file_total_nums as i32);
+                    ui.set_enable_pause_btn(true);
+                    ui.set_enable_cancel_btn(true);
+                }).unwrap();
+            },
+            // 某个切片下载完成
+            ChannelMessage::Downloaded(downloaded_nums) => {
+                ui_weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_downloaded_nums(downloaded_nums);
+                }).unwrap();
+            },
+            // 发出暂停下载信号
+            ChannelMessage::Pause => {
+                download_task.is_pause.store(true, Ordering::Relaxed);
+                download_task.is_new_task.store(false, Ordering::Relaxed);
+            },
+            // 发出取消下载信号
+            ChannelMessage::Cancel => {
+                download_task.is_cancel.store(true, Ordering::Relaxed);
+                if download_task.is_pause.load(Ordering::Relaxed) {
+                    reset_download_status(&ui_weak, &download_task, SharedString::from("Canceled."), true);
+                }
+            },
+            // 回收任务线程
+            ChannelMessage::RecycleTaskThead => {
+                if let Some(handle) = task_thread_handle.lock().unwrap().take() {
+                    handle.join().unwrap();
+                    // println!("release");
+                }
+            }
+        }
+    }
+}
+
 // 解析M3U8，并把待下载文件放入队列中
-fn resolve_m3u8(
-    m3u8_url: &SharedString,
-    save_dir: &str,
-    retry: u32,
-    timeout: u64
-) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
-    let parsed_url = Url::parse(m3u8_url.as_str())?;
-    let base_url = parsed_url.join(".")?;
+fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
+    let base_url = Url::parse(&request_data.m3u8_url)?.join(".")?;
     let mut contents = String::new();
-    let mut is_timeout = false;
+    let mut is_timeout = true;
     let client = Client::builder()
-        .connect_timeout(Duration::from_secs(timeout))
-        // .danger_accept_invalid_certs(true)
-        .user_agent("Chrome/147)")
+        .connect_timeout(Duration::from_secs(request_data.timeout))
+        .danger_accept_invalid_certs(true)
+        .user_agent(request_data.user_agent)
         .build()
         .unwrap();
-    // println!("m3u8_url{}", m3u8_url);
 
-    for _ in 0..retry {
-        if let Ok(res) = client.get(m3u8_url.as_str()).send() && res.status().is_success() {
-            // println!("66{:?}", res.bytes()?);
+    for attemp in 0..request_data.retry {
+        if let Ok(res) = client.get(&request_data.m3u8_url).send() && res.status().is_success() {
             contents = res.text()?;
             is_timeout = false;
             break;
         }
-    }
-    // println!("contents{}", contents);
 
-    // 超时
+        if attemp < request_data.retry - 1 {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     if is_timeout {
         return Err("Connection timeout.".into());
     }
 
-    // 内容为空
-    if contents.is_empty() {
-        return Err("Not valid M3U8 URL.".into());
+    if contents.trim().is_empty() {
+        return Err("Content is empty.".into());
     }
 
-    let m3u8_file = File::create(Path::new(save_dir).join("index.m3u8"))?;
-    let mut writer = BufWriter::new(m3u8_file);
-    let mut wait_download_files: Vec<WaitDownloadFile> = Vec::new(); // 等待下载的文件列表
+    let m3u8_file = File::create(Path::new(&request_data.save_directory).join("index.m3u8"))?;
+    let mut writer = BufWriter::new(&m3u8_file);
+    let mut wait_download_files: Vec<WaitDownloadFile> = vec![];
 
     for line in contents.lines() {
         if line.starts_with("#EXT-X-KEY") {
             let key = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
-            let (filename, url) = parse_m3u8_key_segment(&base_url, key)?;
-            wait_download_files.push(WaitDownloadFile::new(filename.to_owned(), save_dir.to_owned(), url));
-            writeln!(writer, "{}", line.replace(key, &filename))?;
-        } else if !line.starts_with("#") && !line.trim().is_empty() {
-            let (filename, url) = parse_m3u8_key_segment(&base_url, line)?;
-            if !filename.trim().is_empty() {
-                wait_download_files.push(WaitDownloadFile::new(filename.to_owned(), save_dir.to_string(), url));
-                writeln!(writer, "{}", filename)?;
+            let (key_name, url) = parse_m3u8_key_segment(&base_url, key)?;
+            wait_download_files.push(WaitDownloadFile {
+                slice_name: key_name.to_owned(),
+                save_directory: request_data.save_directory.to_owned(),
+                download_url: url,
+            });
+            writeln!(writer, "{}", line.replace(key, &key_name))?;
+            continue;
+        }
+        
+        if !line.starts_with("#") && !line.trim().is_empty() {
+            let (slice_name, url) = parse_m3u8_key_segment(&base_url, line)?;
+            if !slice_name.trim().is_empty() {
+                wait_download_files.push(WaitDownloadFile{
+                    slice_name: slice_name.to_owned(),
+                    save_directory: request_data.save_directory.to_owned(),
+                    download_url: url,
+                });
+                writeln!(writer, "{}", slice_name.to_owned())?;
             }
-        } else {
-            if !line.trim().is_empty() {
-                writeln!(writer, "{}", line)?;
-            }
+            continue;
+        }
+        
+        if !line.trim().is_empty() {
+            writeln!(writer, "{}", line)?;
         }
     }
 
-    // 内容未提取到可下载的文件
     if wait_download_files.is_empty() {
         return Err("No downloadable files found.".into());
     }
@@ -370,70 +398,66 @@ fn parse_m3u8_key_segment(base_url: &Url, s: &str) -> Result<(String, String), B
 
     let filename = url.path_segments()
         .and_then(|mut segments| segments.next_back())
-        .ok_or_else(|| format!("URL path has no filename: {}", url))? 
+        .ok_or_else(|| format!("no slice:{}", url))? 
         .to_string();
 
     Ok((filename, url.to_string()))
 }
 
-// 启动下载
-fn start_download(
+fn parse_download(
+    download_task: Arc<DownloadTask>,
     tx: mpsc::Sender<ChannelMessage>,
-    downloader: Arc<Downloader>,
-    download_config: DownloadConfig,
+    request_data: RequestData,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 保存目录
-    let save_dir = format!("{}\\{}", download_config.work_dir, download_config.video_dir);
-    if !Path::new(&save_dir).is_dir() && fs::create_dir_all(&save_dir).is_err() {
-        return Err("Failed to create directory.".into());
-    }
-
-    // println!("{:?}",save_dir);
-
-    // 解析M3U8
-    let resolved =  resolve_m3u8(&download_config.m3u8_url, &save_dir, download_config.retry, download_config.timeout)?;
-    // 待下载文件和总文件数
-    let (files, file_total_nums) = if downloader.is_new_download.load(Ordering::Relaxed) {
-        let len = resolved.len();
-        // 存储文件总数
-        downloader.file_total_nums.store(len, Ordering::Relaxed);
-        // 设置失败文件数
-        downloader.failed_files.lock().unwrap().clear();
-        (resolved, len)
+    let all_files = resolve_m3u8(request_data.clone())?;
+    let file_total_nums = all_files.len();
+    let wait_download_files = if download_task.is_new_task.load(Ordering::Relaxed) {
+        // 存储总切片数
+        download_task.file_total_nums.store(all_files.len(), Ordering::Relaxed);
+        all_files
     } else {
-        let finished_files = downloader.finished_files.lock().unwrap();
-        (resolved.into_iter().filter(|item| !finished_files.contains(&item.filename)).collect(), downloader.file_total_nums.load(Ordering::Relaxed))
+        let downloaded_files = download_task.downloaded_files.lock().unwrap();
+        all_files.into_iter().filter(|item| !downloaded_files.contains(&item.slice_name)).collect()
     };
 
     let tx1 = tx.clone();
-    tx1.send(ChannelMessage::Downloading(file_total_nums as i32)).unwrap();
+    tx1.send(ChannelMessage::DownloadSlicing(file_total_nums)).unwrap();
 
-    let pool = ThreadPool::new(download_config.threads);
-    for item in files {
-        let downloader_clone = Arc::clone(&downloader);
+    // 若已存在下载失败文件，则清空内容
+    let failed_filename = format!("{}\\{}", request_data.save_directory, FAILED_FILENAME);
+    let failed_link_file = Path::new(&failed_filename);
+    if failed_link_file.is_file() {
+        fs::remove_file(failed_link_file).unwrap();
+    }
+
+    let pool = ThreadPool::new(request_data.threads);
+    for item in wait_download_files {
+        let download_task_clone = Arc::clone(&download_task);
         let client = Client::builder()
-            .connect_timeout(Duration::from_secs(download_config.timeout))
-            .user_agent("Chrome/147)")
+            .connect_timeout(Duration::from_secs(request_data.timeout))
+            .danger_accept_invalid_certs(true)
+            .user_agent(&request_data.user_agent)
             .build()
             .unwrap();
         let tx2 = tx.clone();
 
         pool.execute(move || {
-            if downloader_clone.is_pause.load(Ordering::Relaxed) || downloader_clone.is_cancel.load(Ordering::Relaxed) {
+            if download_task_clone.is_pause.load(Ordering::Relaxed) || download_task_clone.is_cancel.load(Ordering::Relaxed) {
                 return;
             }
 
             let mut is_finish = false;
             // 带重试的下载
-            for attempt in 0..download_config.retry {
+            for attempt in 0..request_data.retry {
                 if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
                     let content = resp.bytes().unwrap();
-                    let mut file = File::create(Path::new(&item.save_path).join(&item.filename)).unwrap();
+                    let mut file = File::create(Path::new(&item.save_directory).join(&item.slice_name)).unwrap();
                     file.write_all(&content).unwrap();
+                    // thread::sleep(Duration::from_millis(200));
                     // 记录已下载的文件
                     let n = {
-                        let mut downloaded = downloader_clone.finished_files.lock().unwrap();
-                        downloaded.push(item.filename.to_owned());
+                        let mut downloaded = download_task_clone.downloaded_files.lock().unwrap();
+                        downloaded.push(item.slice_name.to_owned());
                         downloaded.len()
                     };
                     tx2.send(ChannelMessage::Downloaded(n as i32)).unwrap();
@@ -441,15 +465,15 @@ fn start_download(
                     break;
                 }
 
-                if attempt < download_config.retry - 1 {
+                if attempt < request_data.retry - 1 {
                     thread::sleep(Duration::from_millis(200));
                 }
             }
             if !is_finish {
                 // 记录下载失败的切片
-                downloader_clone.failed_files.lock().unwrap().push(item.download_url.to_string());
-                let failed_link_file = Path::new(&item.save_path).join("failed_link.txt");
-                let mut file = OpenOptions::new().write(true).append(true).create(true).open(failed_link_file).unwrap();
+                download_task_clone.failed_files.lock().unwrap().push(item.download_url.to_string());
+                let failed_link_file = Path::new(&item.save_directory).join(FAILED_FILENAME);
+                let mut file = OpenOptions::new().append(true).create(true).open(failed_link_file).unwrap();
                 if file.metadata().unwrap().len() > 0 {
                     file.write_all(b"\n").unwrap();
                 }
@@ -461,28 +485,32 @@ fn start_download(
     Ok(())
 }
 
+// 取消或正常结束下载时（含下载失败的文件）重置UI
 fn reset_download_status(
     ui_weak: &slint::Weak<AppWindow>,
-    downloader: &Arc<Downloader>,
+    download_task: &Arc<DownloadTask>,
     message: SharedString,
     is_cancel_reset: bool,
 ) {
-    let has_failed_file = if !is_cancel_reset {
-        !downloader.failed_files.lock().unwrap().is_empty()
+    let failed_file_nums = if !is_cancel_reset {
+        download_task.failed_files.lock().unwrap().len()
     } else {
-        false
+        0
     };
+
+    let message: SharedString = if failed_file_nums > 0 { format!("The download is complete, but {} slice{} failed to download.", failed_file_nums, if failed_file_nums > 1 { "s" } else { "" }).into() } else { message };
     
-    downloader.finished_files.lock().unwrap().clear();
-    downloader.is_new_download.store(true, Ordering::Relaxed);
+    download_task.downloaded_files.lock().unwrap().clear();
+    download_task.is_new_task.store(true, Ordering::Relaxed);
+    download_task.file_total_nums.store(0, Ordering::Relaxed);
 
     ui_weak.upgrade_in_event_loop(move |ui| {
         ui.set_message(message);
-        ui.set_enable_download_btn(true);
+        ui.set_enable_start_btn(true);
         ui.set_enable_pause_btn(false);
         ui.set_enable_cancel_btn(false);
         ui.set_is_downloading(false);
-        ui.set_has_failed_file(has_failed_file);
+        ui.set_has_failed_file(failed_file_nums > 0);
         
         if is_cancel_reset {
             ui.set_total_nums(0);
