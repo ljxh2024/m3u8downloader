@@ -32,7 +32,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 save_directory: format!("{}\\{}", ui.get_work_dir(), ui.get_video_name()),
                 m3u8_url: ui.get_m3u8_url().into(),
                 user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
-                threads: ui.get_threads().parse::<usize>().unwrap_or(4),
+                threads: ui.get_threads().parse::<usize>().unwrap_or(10),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
                 is_convert: ui.get_is_convert(),
@@ -316,6 +316,12 @@ fn loop_receive_message(
 
 // 解析M3U8，并把待下载文件放入队列中
 fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
+    // 创建视频目录
+    let save_path = Path::new(&request_data.save_directory);
+    if !save_path.is_dir() {
+        fs::create_dir(save_path)?;
+    }
+
     let base_url = Url::parse(&request_data.m3u8_url)?.join(".")?;
     let mut contents = String::new();
     let mut is_timeout = true;
@@ -510,6 +516,7 @@ fn reset_download_status(
         ui.set_enable_pause_btn(false);
         ui.set_enable_cancel_btn(false);
         ui.set_is_downloading(false);
+        ui.set_is_pause(false);
         ui.set_has_failed_file(failed_file_nums > 0);
         
         if is_cancel_reset {

@@ -35,7 +35,7 @@ export component AppWindow inherits Window {
     out property <string> video-name;
     // out property <string> video-name:"m3u8test";
     out property <string> user-agent;
-    out property <string> threads: 4;
+    out property <string> threads: 10;
     out property <string> retry: 3;
     out property <string> timeout: 5;
 
@@ -83,24 +83,6 @@ export component AppWindow inherits Window {
                             clicked => { root.select-dir(); }
                         }
                     }
-                    // M3U8 URL
-                    Row {
-                        Rectangle {
-                            Text {
-                                text: "M3U8 URL";
-                            }
-                            Text {
-                                x: 80px;
-                                text: "*";
-                                color: red;
-                            }
-                        }
-                        LineEdit {
-                            text <=> root.m3u8-url;
-                            colspan: 2;
-                            enabled: !root.is-downloading;
-                        }
-                    }
                     // 视频名称
                     Row {
                         Rectangle {
@@ -115,6 +97,24 @@ export component AppWindow inherits Window {
                         }
                         LineEdit {
                             text <=> root.video-name;
+                            colspan: 2;
+                            enabled: !root.is-downloading;
+                        }
+                    }
+                    // M3U8 URL
+                    Row {
+                        Rectangle {
+                            Text {
+                                text: "M3U8 URL";
+                            }
+                            Text {
+                                x: 80px;
+                                text: "*";
+                                color: red;
+                            }
+                        }
+                        LineEdit {
+                            text <=> root.m3u8-url;
                             colspan: 2;
                             enabled: !root.is-downloading;
                         }
