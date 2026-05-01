@@ -310,7 +310,7 @@ fn loop_receive_message(
             ChannelMessage::RecycleTaskThead => {
                 if let Some(handle) = task_thread_handle.lock().unwrap().take() {
                     handle.join().unwrap();
-                    // println!("release task thread");
+                    println!("release task thread");
                 }
             }
         }
@@ -464,6 +464,7 @@ fn parse_download(
             // 带重试的下载
             for attempt in 0..request_data.retry {
                 if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
+                    // :todo 待优化错误处理
                     let content = resp.bytes().unwrap();
                     let mut file = File::create(Path::new(&item.save_directory).join(&item.slice_name)).unwrap();
                     file.write_all(&content).unwrap();
