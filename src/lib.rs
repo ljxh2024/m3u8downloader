@@ -61,6 +61,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         move || {
             let ui = ui_weak.unwrap();
             ui.set_enable_cancel_btn(false);
+            ui.set_enable_pause_btn(false);
             ui.set_message(SharedString::from("Canceling..."));
             
             tx_cancel.send(ChannelMessage::Cancel).unwrap();
@@ -330,6 +331,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     let mut is_timeout = true;
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(request_data.timeout))
+        .timeout(Duration::from_secs(100))
         .danger_accept_invalid_certs(true)
         .user_agent(request_data.user_agent)
         .build()
@@ -449,6 +451,7 @@ fn parse_download(
         let download_task_clone = Arc::clone(&download_task);
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(request_data.timeout))
+            .timeout(Duration::from_secs(100))
             .danger_accept_invalid_certs(true)
             .user_agent(&request_data.user_agent)
             .build()
