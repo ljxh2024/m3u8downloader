@@ -32,7 +32,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 save_directory: format!("{}\\{}", ui.get_work_dir(), ui.get_video_name()),
                 m3u8_url: ui.get_m3u8_url().into(),
                 user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
-                threads: ui.get_threads().parse::<usize>().unwrap_or(4),
+                threads: ui.get_threads().parse::<usize>().unwrap_or(10),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
                 is_convert: ui.get_is_convert(),
