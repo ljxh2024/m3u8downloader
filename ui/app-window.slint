@@ -24,16 +24,13 @@ export component AppWindow inherits Window {
 
     // 输入组（后端可读可写）
     in-out property <string> work-dir;
-    // in-out property <string> work-dir:"F:\\temp";
     in-out property <string> message;
     in-out property <int> total_nums;
     in-out property <int> downloaded_nums;
 
     // 输入组（后端只读）
     out property <string> m3u8-url;
-    // out property <string> m3u8-url:"http://localhost/res/videos/m3u8/8/index.m3u8";
     out property <string> video-name;
-    // out property <string> video-name:"m3u8test";
     out property <string> user-agent;
     out property <string> threads: 8;
     out property <string> retry: 3;
