@@ -32,7 +32,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 save_directory: format!("{}\\{}", ui.get_work_dir(), ui.get_video_name()),
                 m3u8_url: ui.get_m3u8_url().into(),
                 user_agent: if ui.get_user_agent().trim().is_empty() { "Chrome/147.0".into() } else { ui.get_user_agent().into() },
-                threads: ui.get_threads().parse::<usize>().unwrap_or(10),
+                threads: ui.get_threads().parse::<usize>().unwrap_or(4),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
                 is_convert: ui.get_is_convert(),
@@ -239,12 +239,12 @@ fn loop_receive_message(
 
                     // 所有切片下载结束
                     if download_task1.file_total_nums.load(Ordering::Relaxed) == download_task1.downloaded_files.lock().unwrap().len() {
+                        let mut msg = String::from("Download successful!");
                         // 不为空=转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
-                                ui.set_message("Download successful and Converting to mp4...".into());
+                                ui.set_message("Converting to mp4 now...".into());
                             }).unwrap();
-                            let mut msg = String::from("Unable to convert to mp4.");
                             if Command::new("ffmpeg").args(convert_args).creation_flags(0x08000000).output().unwrap().status.success() {
                                 msg = String::from("Successfully converted to mp4");
                                 // 是否删除切片
@@ -266,9 +266,11 @@ fn loop_receive_message(
                                         let _ = fs::remove_file(format!("{}\\index.m3u8", save_directory));
                                     }
                                 }
+                            } else {
+                                msg = String::from("Failed to converted to mp4.");
                             }
-                            reset_download_status(&ui_weak1, &download_task1, SharedString::from(msg), false);
                         }
+                        reset_download_status(&ui_weak1, &download_task1, SharedString::from(msg), false);
                     } else {
                         // 有切片下载失败了
                         reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
@@ -357,6 +359,11 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     let mut wait_download_files: Vec<WaitDownloadFile> = vec![];
 
     for line in contents.lines() {
+        // :todo内部还有M3U8
+        if line.ends_with(".m3u8") {
+            break;
+        }
+
         if line.starts_with("#EXT-X-KEY") {
             let key = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
             let (key_name, url) = parse_m3u8_key_segment(&base_url, key)?;
@@ -388,7 +395,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     if wait_download_files.is_empty() {
-        return Err("No downloadable files found.".into());
+        return Err("No downloadable.".into());
     }
 
     Ok(wait_download_files)
