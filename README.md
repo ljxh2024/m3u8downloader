@@ -14,4 +14,4 @@ M3U8下载器，使用  `Rust` + `Slint UI` 实现。
 基础功能已具备，将持续优化
 
 ### 截图
-![light](screenshots/dark.png)
+![dark](screenshots/dark.jpg)
