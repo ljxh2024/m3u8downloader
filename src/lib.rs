@@ -185,8 +185,11 @@ fn loop_receive_message(
     rx: mpsc::Receiver<ChannelMessage>,
     ui_weak: slint::Weak<AppWindow>,
 ) {
+    // 新下载任务配置
     let download_task = Arc::new(DownloadTask::new());
+    // 收集新任务线程，下载完成后释放
     let task_thread_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    // 当前已下载的文件大小
     let mut current_content_length: u64 = 0;
 
     // 一个线程、一个接收者时使用while let
@@ -223,15 +226,16 @@ fn loop_receive_message(
                     (vec![], false, PathBuf::new())
                 };
 
+                // 任务线程
                 let task_thread = thread::spawn(move || {
                     let ui_weak2 = ui_weak1.clone();
                     let download_task2 = Arc::clone(&download_task1);
-                    
-                    thread::spawn(move || {
+                    // 解析并下载的线程
+                    let download_handle = thread::spawn(move || {
                         let download_task3 = Arc::clone(&download_task2);
+                        // 解析失败
                         if let Err(e) = parse_download(download_task2, tx1, request_data) {
                             download_task3.is_parse_fail.store(true, Ordering::Relaxed);
-
                             let err_msg = e.to_string();
                             ui_weak2.upgrade_in_event_loop(move |ui| {
                                 ui.invoke_show_message(err_msg.into(), true);
@@ -239,8 +243,9 @@ fn loop_receive_message(
                                 ui.set_enable_start_btn(true);
                             }).unwrap();
                         }
-                    }).join().unwrap();
-
+                    });
+                    // 等待完成，可记录下载耗时
+                    download_handle.join().unwrap();
                     // 通知准备回收本次任务线程
                     tx2.send(ChannelMessage::RecycleTaskThead).unwrap();
 
@@ -255,7 +260,6 @@ fn loop_receive_message(
                             ui.invoke_show_message("Paused.".into(), false);
                             ui.set_is_pause(true);
                             ui.set_enable_start_btn(true);
-                            // ui.set_show_loading(false);
                         }).unwrap();
                         return;
                     }
@@ -274,7 +278,7 @@ fn loop_receive_message(
                     // 所有切片全被下载
                     if download_task1.file_total_nums.load(Ordering::Relaxed) == downloaded_files.len() {
                         let mut msg = String::from("Download completed.");
-                        // 不为空=转MP4
+                        // 不为空 == 转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
                                 ui.invoke_show_message("Converting to mp4 now...".into(), false);
@@ -289,7 +293,7 @@ fn loop_receive_message(
                                     for slice_name in downloaded_files.iter() {
                                         let slice_filepath = save_path.join(slice_name);
                                         if slice_filepath.is_file() && fs::remove_file(slice_filepath).is_err() {
-                                            msg.push_str(", but Failed to delete the slice.");
+                                            msg.push_str(", but Failed to delete the segments.");
                                             delete_ok = false;
                                             break;
                                         }
@@ -312,9 +316,10 @@ fn loop_receive_message(
                         reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
                     }
                 });
+                // 收集任务线程句柄
                 *task_thread_handle.lock().unwrap() = Some(task_thread);
             },
-            // 开始下载切片
+            // M3U8解析成功，即将下载切片
             ChannelMessage::DownloadSlicing(file_total_nums) => {
                 ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.invoke_show_message("Downloading...".into(), false);
@@ -338,12 +343,12 @@ fn loop_receive_message(
                     ui.set_content_length(byte_convert(current_content_length).into());
                 }).unwrap();
             },
-            // 发出暂停下载信号
+            // 响应暂停信号
             ChannelMessage::Pause => {
                 download_task.is_pause.store(true, Ordering::Relaxed);
                 download_task.is_new_task.store(false, Ordering::Relaxed);
             },
-            // 发出取消下载信号
+            // 响应取消信号
             ChannelMessage::Cancel => {
                 download_task.is_cancel.store(true, Ordering::Relaxed);
                 if download_task.is_pause.load(Ordering::Relaxed) {
