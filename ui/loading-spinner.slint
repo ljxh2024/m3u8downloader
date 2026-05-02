@@ -1,0 +1,14 @@
+export component LoadingSpinner {
+    width: 16px;
+    height: 16px;
+    in-out property <bool> ring;
+    
+    Rectangle {
+        Image {
+            source: @image-url("90-ring-with-bg.svg");
+            width: 100%;
+            height: 100%;
+            transform-rotation: root.ring ? 360deg * mod(animation-tick(), 1s) / 1s : 0deg;
+        }
+    }
+}

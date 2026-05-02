@@ -4,8 +4,10 @@ import {
     Button,
     VerticalBox,
     HorizontalBox,
-    CheckBox,
+    CheckBox
 } from "std-widgets.slint";
+
+import { LoadingSpinner } from "loading-spinner.slint";
 
 export component AppWindow inherits Window {
     title: "M3U8Downloader";
@@ -21,6 +23,7 @@ export component AppWindow inherits Window {
     in-out property <bool> has-failed-file: false;
     in-out property <bool> is-convert: false;
     in-out property <bool> is-delete-slice: false;
+    in-out property <bool> show-loading: false;
 
     // 输入组（后端可读可写）
     // in-out property <string> work-dir;
@@ -173,11 +176,16 @@ export component AppWindow inherits Window {
                         text: "Convert to MP4 after downloaded";
                         checked <=> root.is-convert;
                         enabled: !root.is-downloading || root.is-pause;
+                        toggled() => {
+                            if !self.checked && root.is-delete-slice {
+                                root.is-delete-slice = false;
+                            }
+                        }
                     }
                     CheckBox {
-                        text: "Delete the slices after converted";
+                        text: "Delete the segments after converted";
                         checked <=> root.is-delete-slice;
-                        enabled: !root.is-downloading || root.is-pause;
+                        enabled: root.is-convert && (!root.is-downloading || root.is-pause);
                     }
                 }
                 // 按钮事件操作
@@ -216,6 +224,9 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                         color: root.is-err-msg ? red : black;
                         horizontal-alignment: center;
+                    }
+                    if root.show-loading : LoadingSpinner{
+                        ring: !root.is-pause;
                     }
                 }
                 if root.has-failed-file : HorizontalBox {

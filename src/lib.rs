@@ -255,6 +255,7 @@ fn loop_receive_message(
                             ui.invoke_show_message("Paused.".into(), false);
                             ui.set_is_pause(true);
                             ui.set_enable_start_btn(true);
+                            // ui.set_show_loading(false);
                         }).unwrap();
                         return;
                     }
@@ -295,7 +296,7 @@ fn loop_receive_message(
                                     }
                                     // 成功删除已下载切片
                                     if delete_ok {
-                                        msg.push_str(" and delete slice.");
+                                        msg.push_str(" and delete segments.");
                                         // 同时删除M3U8
                                         let _ = fs::remove_file(save_path.join(M3U8_FILENAME));
                                     }
@@ -320,6 +321,8 @@ fn loop_receive_message(
                     ui.set_total_nums(file_total_nums as i32);
                     ui.set_enable_pause_btn(true);
                     ui.set_enable_cancel_btn(true);
+                    ui.set_show_loading(true);
+                    ui.set_is_pause(false);
                 }).unwrap();
             },
             // 切片下载完成，更新进度
@@ -590,12 +593,13 @@ fn reset_download_status(
     download_task.file_total_nums.store(0, Ordering::Relaxed);
 
     ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.invoke_show_message(final_message, false);
+        ui.invoke_show_message(final_message, failed_file_nums > 0);
         ui.set_enable_start_btn(true);
         ui.set_enable_pause_btn(false);
         ui.set_enable_cancel_btn(false);
         ui.set_is_downloading(false);
         ui.set_is_pause(false);
+        ui.set_show_loading(false);
         ui.set_has_failed_file(failed_file_nums > 0);
         
         if is_cancel_reset {
