@@ -4,10 +4,9 @@ import {
     Button,
     VerticalBox,
     HorizontalBox,
-    CheckBox
+    CheckBox,
+    Palette
 } from "std-widgets.slint";
-
-import { LoadingSpinner } from "loading-spinner.slint";
 
 export component AppWindow inherits Window {
     title: "M3U8Downloader";
@@ -22,8 +21,7 @@ export component AppWindow inherits Window {
     in-out property <bool> is-pause: false;
     in-out property <bool> has-failed-file: false;
     in-out property <bool> is-convert: false;
-    in-out property <bool> is-delete-slice: false;
-    in-out property <bool> show-loading: false;
+    in-out property <bool> is-delete-segment: false;
 
     // 输入组（后端可读可写）
     // in-out property <string> work-dir;
@@ -42,6 +40,7 @@ export component AppWindow inherits Window {
     out property <string> timeout: 5;
     out property <string> message;
     out property <bool> is-err-msg;
+    out property <color> normal-msg-color: Palette.color-scheme == ColorScheme.light ? #323130 : #e6e6e6;
 
     out property <string> github: "https://github.com/ljxh2024/m3u8downloader";
 
@@ -116,7 +115,7 @@ export component AppWindow inherits Window {
                                 text: "M3U8 URL";
                             }
                             Text {
-                                x: 80px;
+                                x: 81px;
                                 text: "*";
                                 color: red;
                             }
@@ -177,14 +176,14 @@ export component AppWindow inherits Window {
                         checked <=> root.is-convert;
                         enabled: !root.is-downloading || root.is-pause;
                         toggled() => {
-                            if !self.checked && root.is-delete-slice {
-                                root.is-delete-slice = false;
+                            if !self.checked && root.is-delete-segment {
+                                root.is-delete-segment = false;
                             }
                         }
                     }
                     CheckBox {
                         text: "Delete the segments after converted";
-                        checked <=> root.is-delete-slice;
+                        checked <=> root.is-delete-segment;
                         enabled: root.is-convert && (!root.is-downloading || root.is-pause);
                     }
                 }
@@ -222,11 +221,8 @@ export component AppWindow inherits Window {
                     Text {
                         text: root.message;
                         wrap: word-wrap;
-                        color: root.is-err-msg ? red : black;
+                        color: root.is-err-msg ? #f24040 : root.normal-msg-color;
                         horizontal-alignment: center;
-                    }
-                    if root.show-loading : LoadingSpinner{
-                        ring: !root.is-pause;
                     }
                 }
                 if root.has-failed-file : HorizontalBox {

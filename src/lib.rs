@@ -1,6 +1,6 @@
 pub mod thread_pool;
 
-use std::{fs::{self, File, OpenOptions}, io::{BufWriter, Write}, os::windows::process::CommandExt, path::{Path, PathBuf}, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
+use std::{fs::{self, File, OpenOptions}, io::{self, BufWriter, Write}, os::windows::process::CommandExt, path::{Path, PathBuf}, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
 use slint::SharedString;
 use url::Url;
 use reqwest::blocking::Client;
@@ -40,7 +40,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
                 is_convert: ui.get_is_convert(),
-                is_delete_slice: ui.get_is_delete_slice(),
+                is_delete_segment: ui.get_is_delete_segment(),
             })).unwrap();
         }
     });
@@ -176,7 +176,7 @@ struct RequestData {
     retry: u32,
     timeout: u64,
     is_convert: bool,
-    is_delete_slice: bool,
+    is_delete_segment: bool,
 }
 
 // 启用新线程监控信道消息
@@ -212,7 +212,7 @@ fn loop_receive_message(
                 }
 
                 // 构建转换MP4参数
-                let (convert_args, is_delete_slice, save_path) = if request_data.is_convert {
+                let (convert_args, is_delete_segment, save_path) = if request_data.is_convert {
                     (vec![
                         "-allowed_extensions".to_string(),
                         "ALL".to_string(),
@@ -221,7 +221,7 @@ fn loop_receive_message(
                         "-c".to_string(),
                         "copy".to_string(),
                         request_data.save_path.join("output.mp4").to_str().unwrap().to_string()
-                    ], request_data.is_delete_slice, request_data.save_path.clone())
+                    ], request_data.is_delete_segment, request_data.save_path.clone())
                 } else {
                     (vec![], false, PathBuf::new())
                 };
@@ -275,42 +275,32 @@ fn loop_receive_message(
                         let guard = download_task1.downloaded_files.lock().unwrap();
                         guard.clone()
                     };
-                    // 所有切片全被下载
+                    // 所有切片均已下载
                     if download_task1.file_total_nums.load(Ordering::Relaxed) == downloaded_files.len() {
-                        let mut msg = String::from("Download completed.");
+                        let mut message = String::from("All segments have been downloaded!");
                         // 不为空 == 转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
                                 ui.invoke_show_message("Converting to mp4 now...".into(), false);
                             }).unwrap();
                             // 使用ffmpeg转MP4
-                            let cmd = Command::new("ffmpeg").args(convert_args).creation_flags(0x08000000).output().unwrap();
-                            if cmd.status.success() {
-                                msg = String::from("Successfully converted to mp4");
-                                // 删除切片
-                                if is_delete_slice  {
-                                    let mut delete_ok = true;
-                                    for slice_name in downloaded_files.iter() {
-                                        let slice_filepath = save_path.join(slice_name);
-                                        if slice_filepath.is_file() && fs::remove_file(slice_filepath).is_err() {
-                                            msg.push_str(", but Failed to delete the segments.");
-                                            delete_ok = false;
-                                            break;
+                            match convert_and_delete(convert_args, is_delete_segment, downloaded_files, save_path) {
+                                Ok(msg) => {
+                                    message = msg;
+                                },
+                                Err(e) => {
+                                    match e.kind() {
+                                        io::ErrorKind::NotFound => {
+                                            message = String::from("Conversion failed: Cannot find the ffmpeg command");
+                                        },
+                                        _ => {
+                                            message = String::from("Unknown error");
                                         }
                                     }
-                                    // 成功删除已下载切片
-                                    if delete_ok {
-                                        msg.push_str(" and delete segments.");
-                                        // 同时删除M3U8
-                                        let _ = fs::remove_file(save_path.join(M3U8_FILENAME));
-                                    }
                                 }
-                            } else {
-                                // 转换失败
-                                msg = String::from("Failed to converted to mp4.");
                             }
                         }
-                        reset_download_status(&ui_weak1, &download_task1, SharedString::from(msg), false);
+                        reset_download_status(&ui_weak1, &download_task1, SharedString::from(message), false);
                     } else {
                         // 有切片下载失败了
                         reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
@@ -326,7 +316,6 @@ fn loop_receive_message(
                     ui.set_total_nums(file_total_nums as i32);
                     ui.set_enable_pause_btn(true);
                     ui.set_enable_cancel_btn(true);
-                    ui.set_show_loading(true);
                     ui.set_is_pause(false);
                 }).unwrap();
             },
@@ -366,6 +355,36 @@ fn loop_receive_message(
     }
 }
 
+// 转换MP4并删除切片
+fn convert_and_delete(
+    args: Vec<String>,
+    is_delete_segment: bool,
+    downloaded_files: Vec<String>,
+    save_path: PathBuf,
+) -> Result<String, io::Error> {
+    let cmd = Command::new("ffmpeg").args(args).creation_flags(0x08000000).output()?;
+    // 转换MP4成功
+    if cmd.status.success() {
+        let mut msg = String::from("Successfully converted to mp4!");
+        // 勾选了要删除切片
+        if is_delete_segment {
+            // 删除m3u8
+            let _ = fs::remove_file(save_path.join(M3U8_FILENAME));
+            // 删除切片
+            for slice_name in downloaded_files {
+                let slice_filepath = save_path.join(slice_name);
+                if slice_filepath.is_file() {
+                    let _ = fs::remove_file(slice_filepath);
+                }
+            }
+            msg.push_str(" And deleted the segments!");
+        }
+        Ok(msg.into())
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "Failed to convert MP4"))
+    }
+}
+
 // 解析M3U8，并把待下载文件放入队列中
 fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
     let base_url = Url::parse(&request_data.m3u8_url)?.join(".")?;
@@ -390,11 +409,11 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     if is_timeout {
-        return Err("Connection timeout.".into());
+        return Err("Connection timeout".into());
     }
 
     if contents.trim().is_empty() {
-        return Err("Content is empty.".into());
+        return Err("Content is empty".into());
     }
 
     let m3u8_file = File::create(request_data.save_path.join(M3U8_FILENAME))?;
@@ -438,7 +457,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     if wait_download_files.is_empty() {
-        return Err("No downloadable.".into());
+        return Err("No downloadable".into());
     }
 
     Ok(wait_download_files)
@@ -604,7 +623,6 @@ fn reset_download_status(
         ui.set_enable_cancel_btn(false);
         ui.set_is_downloading(false);
         ui.set_is_pause(false);
-        ui.set_show_loading(false);
         ui.set_has_failed_file(failed_file_nums > 0);
         
         if is_cancel_reset {
