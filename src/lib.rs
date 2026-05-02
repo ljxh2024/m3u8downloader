@@ -281,7 +281,7 @@ fn loop_receive_message(
                         // 不为空 == 转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
-                                ui.invoke_show_message("Converting to mp4 now...".into(), false);
+                                ui.invoke_show_message("Converting to MP4 now...".into(), false);
                             }).unwrap();
                             // 使用ffmpeg转MP4
                             match convert_and_delete(convert_args, is_delete_segment, downloaded_files, save_path) {
@@ -291,10 +291,10 @@ fn loop_receive_message(
                                 Err(e) => {
                                     match e.kind() {
                                         io::ErrorKind::NotFound => {
-                                            message = String::from("Conversion failed: Cannot find the ffmpeg command");
+                                            message = String::from("An error occurred: Cannot find the ffmpeg command");
                                         },
                                         _ => {
-                                            message = String::from("Unknown error");
+                                           message = String::from(e.to_string());
                                         }
                                     }
                                 }
@@ -365,7 +365,7 @@ fn convert_and_delete(
     let cmd = Command::new("ffmpeg").args(args).creation_flags(0x08000000).output()?;
     // 转换MP4成功
     if cmd.status.success() {
-        let mut msg = String::from("Successfully converted to mp4!");
+        let mut msg = String::from("Successfully converted to MP4!");
         // 勾选了要删除切片
         if is_delete_segment {
             // 删除m3u8
