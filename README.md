@@ -23,3 +23,10 @@ M3U8下载器，使用  `Rust` + `Slint UI` 实现。
 
 - 克隆本项目手动构建
 - 下载 `exe` 文件：[m3u8downloader-x86_64-v0.1.0.exe](http://124.71.107.97/res/m3u8downloader-x86_64-v0.1.0.exe)
+
+## 截图
+
+<div style="display: flex; gap: 10px;">
+  <img src="screenshots/light.png" alt="light" style="width: 300px;">
+  <img src="screenshots/dark.png" alt="dark" style="width: 300px;">
+</div>

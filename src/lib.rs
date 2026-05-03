@@ -1,11 +1,24 @@
 pub mod thread_pool;
 
-use std::{fs::{self, File, OpenOptions}, io::{self, BufWriter, Write}, os::windows::process::CommandExt, path::{Path, PathBuf}, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
-use slint::{PhysicalPosition, SharedString};
-use url::Url;
-use reqwest::blocking::Client;
 use crate::thread_pool::ThreadPool;
 use regex::Regex;
+use reqwest::blocking::Client;
+use slint::{PhysicalPosition, SharedString};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, BufWriter, Write},
+    os::windows::process::CommandExt,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
+use url::Url;
 use winsafe::{GetSystemMetrics, co::SM};
 
 slint::include_modules!();
@@ -23,7 +36,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // 控制窗口位置
     let x = (GetSystemMetrics(SM::CXSCREEN) - 370) / 2;
     let y = (GetSystemMetrics(SM::CYSCREEN) - 600) / 2; // 尽量偏高
-    window.window().set_position(slint::WindowPosition::Physical(PhysicalPosition {x: x, y: y}));
+    window
+        .window()
+        .set_position(slint::WindowPosition::Physical(PhysicalPosition { x, y }));
 
     let (tx, rx) = mpsc::channel();
 
@@ -39,17 +54,20 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ui.set_has_failed_file(false);
             ui.invoke_show_message(SharedString::from("正在解析..."), false);
 
-            let (save_path, video_name) = create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap();
-            tx_start.send(ChannelMessage::StartDownload(RequestData {
-                video_name: video_name,
-                save_path: save_path,
-                m3u8_url: ui.get_m3u8_url().into(),
-                threads: ui.get_threads().parse::<usize>().unwrap_or(4),
-                retry: ui.get_retry().parse::<u32>().unwrap_or(3),
-                timeout: ui.get_retry().parse::<u64>().unwrap_or(3),
-                is_merge: ui.get_is_merge(),
-                is_delete_segment: ui.get_is_delete_segment(),
-            })).unwrap();
+            let (save_path, video_name) =
+                create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap();
+            tx_start
+                .send(ChannelMessage::StartDownload(RequestData {
+                    video_name,
+                    save_path,
+                    m3u8_url: ui.get_m3u8_url().into(),
+                    threads: ui.get_threads().parse::<usize>().unwrap_or(4),
+                    retry: ui.get_retry().parse::<u32>().unwrap_or(3),
+                    timeout: ui.get_retry().parse::<u64>().unwrap_or(3),
+                    is_merge: ui.get_is_merge(),
+                    is_delete_segment: ui.get_is_delete_segment(),
+                }))
+                .unwrap();
         }
     });
 
@@ -75,7 +93,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ui.set_enable_cancel_btn(false);
             ui.set_enable_pause_btn(false);
             ui.invoke_show_message(SharedString::from("正在取消..."), false);
-            
+
             tx_cancel.send(ChannelMessage::Cancel).unwrap();
         }
     });
@@ -84,14 +102,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     window.on_select_dir({
         let ui_weak = window.as_weak();
         move || {
-            ui_weak
-                .upgrade()
-                .unwrap()
-                .set_work_dir(rfd::FileDialog::new()
+            ui_weak.upgrade().unwrap().set_work_dir(
+                rfd::FileDialog::new()
                     .pick_folder()
                     .map(|path| path.to_string_lossy().to_string().into())
-                    .unwrap_or_default()
-                );
+                    .unwrap_or_default(),
+            );
         }
     });
 
@@ -101,10 +117,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
         move || {
             let ui = ui_weak.unwrap();
             Command::new("explorer")
-                .arg(Path::new("/select,")
-                    .join(ui.get_work_dir())
-                    .join(ui.get_video_name())
-                    .join(FAILED_FILENAME))
+                .arg(
+                    Path::new("/select,")
+                        .join(ui.get_work_dir())
+                        .join(ui.get_video_name())
+                        .join(FAILED_FILENAME),
+                )
                 .spawn()
                 .unwrap()
                 .wait()
@@ -221,15 +239,29 @@ fn loop_receive_message(
 
                 // 构建合并MP4参数
                 let (convert_args, is_delete_segment, save_path) = if request_data.is_merge {
-                    (vec![
-                        "-allowed_extensions".to_string(),
-                        "ALL".to_string(),
-                        "-i".to_string(),
-                        request_data.save_path.join(M3U8_FILENAME).to_str().unwrap().to_string(),
-                        "-c".to_string(),
-                        "copy".to_string(),
-                        request_data.save_path.join(format!("{}.mp4", request_data.video_name)).to_str().unwrap().to_string()
-                    ], request_data.is_delete_segment, request_data.save_path.clone())
+                    (
+                        vec![
+                            "-allowed_extensions".to_string(),
+                            "ALL".to_string(),
+                            "-i".to_string(),
+                            request_data
+                                .save_path
+                                .join(M3U8_FILENAME)
+                                .to_str()
+                                .unwrap()
+                                .to_string(),
+                            "-c".to_string(),
+                            "copy".to_string(),
+                            request_data
+                                .save_path
+                                .join(format!("{}.mp4", request_data.video_name))
+                                .to_str()
+                                .unwrap()
+                                .to_string(),
+                        ],
+                        request_data.is_delete_segment,
+                        request_data.save_path.clone(),
+                    )
                 } else {
                     (vec![], false, PathBuf::new())
                 };
@@ -245,11 +277,13 @@ fn loop_receive_message(
                         if let Err(e) = parse_download(download_task2, tx1, request_data) {
                             download_task3.is_parse_fail.store(true, Ordering::Relaxed);
                             let err_msg = e.to_string();
-                            ui_weak2.upgrade_in_event_loop(move |ui| {
-                                ui.invoke_show_message(err_msg.into(), true);
-                                ui.set_is_downloading(false);
-                                ui.set_enable_start_btn(true);
-                            }).unwrap();
+                            ui_weak2
+                                .upgrade_in_event_loop(move |ui| {
+                                    ui.invoke_show_message(err_msg.into(), true);
+                                    ui.set_is_downloading(false);
+                                    ui.set_enable_start_btn(true);
+                                })
+                                .unwrap();
                         }
                     });
                     // 等待完成，可记录下载耗时
@@ -264,17 +298,24 @@ fn loop_receive_message(
 
                     // 暂停处理
                     if download_task1.is_pause.load(Ordering::Relaxed) {
-                        ui_weak1.upgrade_in_event_loop(move |ui| {
-                            ui.invoke_show_message("已暂停".into(), false);
-                            ui.set_is_pause(true);
-                            ui.set_enable_start_btn(true);
-                        }).unwrap();
+                        ui_weak1
+                            .upgrade_in_event_loop(move |ui| {
+                                ui.invoke_show_message("已暂停".into(), false);
+                                ui.set_is_pause(true);
+                                ui.set_enable_start_btn(true);
+                            })
+                            .unwrap();
                         return;
                     }
 
                     // 取消处理
                     if download_task1.is_cancel.load(Ordering::Relaxed) {
-                        reset_download_status(&ui_weak1, &download_task1, SharedString::from("已取消"), true);
+                        reset_download_status(
+                            &ui_weak1,
+                            &download_task1,
+                            SharedString::from("已取消"),
+                            true,
+                        );
                         return;
                     }
 
@@ -284,79 +325,107 @@ fn loop_receive_message(
                         guard.clone()
                     };
                     // 所有分片均已下载
-                    if download_task1.file_total_nums.load(Ordering::Relaxed) == downloaded_files.len() {
+                    if download_task1.file_total_nums.load(Ordering::Relaxed)
+                        == downloaded_files.len()
+                    {
                         let mut message = String::from("所有分片已下载完毕");
                         // 不为空 == 转MP4
                         if !convert_args.is_empty() {
-                            ui_weak1.upgrade_in_event_loop(move |ui| {
-                                ui.invoke_show_message("正在合并为MP4...".into(), false);
-                            }).unwrap();
+                            ui_weak1
+                                .upgrade_in_event_loop(move |ui| {
+                                    ui.invoke_show_message("正在合并为MP4...".into(), false);
+                                })
+                                .unwrap();
                             // 使用ffmpeg转MP4
-                            match merge_and_delete(convert_args, is_delete_segment, downloaded_files, save_path) {
+                            match merge_and_delete(
+                                convert_args,
+                                is_delete_segment,
+                                downloaded_files,
+                                save_path,
+                            ) {
                                 Ok(msg) => {
                                     message = msg;
-                                },
-                                Err(e) => {
-                                    match e.kind() {
-                                        io::ErrorKind::NotFound => {
-                                            message = String::from("合并失败：未找到FFmpeg命令");
-                                        },
-                                        _ => {
-                                           message = String::from(e.to_string());
-                                        }
-                                    }
                                 }
+                                Err(e) => match e.kind() {
+                                    io::ErrorKind::NotFound => {
+                                        message = String::from("合并失败：未找到FFmpeg命令");
+                                    }
+                                    _ => {
+                                        message = e.to_string();
+                                    }
+                                },
                             }
                         }
-                        reset_download_status(&ui_weak1, &download_task1, SharedString::from(message), false);
+                        reset_download_status(
+                            &ui_weak1,
+                            &download_task1,
+                            SharedString::from(message),
+                            false,
+                        );
                     } else {
                         // 有分片下载失败了
-                        reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
+                        reset_download_status(
+                            &ui_weak1,
+                            &download_task1,
+                            SharedString::new(),
+                            false,
+                        );
                     }
                 });
                 // 收集任务线程句柄
                 *task_thread_handle.lock().unwrap() = Some(task_thread);
-            },
+            }
             // M3U8解析成功，即将下载分片
             ChannelMessage::DownloadSegment(file_total_nums) => {
-                ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.invoke_show_message("正在下载分片...".into(), false);
-                    ui.set_total_nums(file_total_nums as i32);
-                    ui.set_enable_pause_btn(true);
-                    ui.set_enable_cancel_btn(true);
-                    ui.set_is_pause(false);
-                }).unwrap();
-            },
+                ui_weak
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.invoke_show_message("正在下载分片...".into(), false);
+                        ui.set_total_nums(file_total_nums as i32);
+                        ui.set_enable_pause_btn(true);
+                        ui.set_enable_cancel_btn(true);
+                        ui.set_is_pause(false);
+                    })
+                    .unwrap();
+            }
             // 分片下载完成，更新进度
-            ChannelMessage::SegmentDownloaded { segment_name, content_length } => {
+            ChannelMessage::SegmentDownloaded {
+                segment_name,
+                content_length,
+            } => {
                 let n = {
                     let mut downloaded = download_task.downloaded_files.lock().unwrap();
                     downloaded.push(segment_name);
                     downloaded.len()
                 } as i32;
                 current_content_length += content_length;
-                ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_downloaded_nums(n);
-                    ui.set_content_length(byte_convert(current_content_length).into());
-                }).unwrap();
-            },
+                ui_weak
+                    .upgrade_in_event_loop(move |ui| {
+                        ui.set_downloaded_nums(n);
+                        ui.set_content_length(byte_convert(current_content_length).into());
+                    })
+                    .unwrap();
+            }
             // 响应暂停信号
             ChannelMessage::Pause => {
                 download_task.is_pause.store(true, Ordering::Relaxed);
                 download_task.is_new_task.store(false, Ordering::Relaxed);
-            },
+            }
             // 响应取消信号
             ChannelMessage::Cancel => {
                 download_task.is_cancel.store(true, Ordering::Relaxed);
                 if download_task.is_pause.load(Ordering::Relaxed) {
-                    reset_download_status(&ui_weak, &download_task, SharedString::from("已取消"), true);
+                    reset_download_status(
+                        &ui_weak,
+                        &download_task,
+                        SharedString::from("已取消"),
+                        true,
+                    );
                 }
-            },
+            }
             // 回收任务线程
             ChannelMessage::RecycleTaskThead => {
                 if let Some(handle) = task_thread_handle.lock().unwrap().take() {
                     handle.join().unwrap();
-                    println!("release task thread");
                 }
             }
         }
@@ -370,7 +439,10 @@ fn merge_and_delete(
     downloaded_files: Vec<String>,
     save_path: PathBuf,
 ) -> Result<String, io::Error> {
-    let cmd = Command::new("ffmpeg").args(args).creation_flags(0x08000000).output()?;
+    let cmd = Command::new("ffmpeg")
+        .args(args)
+        .creation_flags(0x08000000)
+        .output()?;
     // 合并MP4成功
     if cmd.status.success() {
         let mut msg = String::from("合并完成");
@@ -387,14 +459,16 @@ fn merge_and_delete(
             }
             msg.push_str("，分片已删除");
         }
-        Ok(msg.into())
+        Ok(msg)
     } else {
-        Err(io::Error::new(io::ErrorKind::Other, "合并失败"))
+        Err(io::Error::other("合并失败"))
     }
 }
 
 // 解析M3U8，并把待下载文件放入队列中
-fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
+fn resolve_m3u8(
+    request_data: RequestData,
+) -> Result<Vec<WaitDownloadFile>, Box<dyn std::error::Error>> {
     let base_url = Url::parse(&request_data.m3u8_url)?.join(".")?;
     let mut contents = String::new();
     let mut is_timeout = true;
@@ -405,7 +479,9 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
         .build()?;
 
     for attemp in 0..request_data.retry {
-        if let Ok(res) = client.get(&request_data.m3u8_url).send() && res.status().is_success() {
+        if let Ok(res) = client.get(&request_data.m3u8_url).send()
+            && res.status().is_success()
+        {
             contents = res.text()?;
             is_timeout = false;
             break;
@@ -440,7 +516,11 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
         }
 
         if line.starts_with("#EXT-X-KEY") {
-            let key = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
+            let key = line
+                .split("URI=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or("");
             let url = if key.starts_with("http://") || key.starts_with("https://") {
                 Url::parse(key)?
             } else {
@@ -488,18 +568,24 @@ fn parse_download(
     let file_total_nums = all_files.len();
     let wait_download_files = if download_task.is_new_task.load(Ordering::Relaxed) {
         // 存储总分片数
-        download_task.file_total_nums.store(all_files.len(), Ordering::Relaxed);
+        download_task
+            .file_total_nums
+            .store(all_files.len(), Ordering::Relaxed);
         all_files
     } else {
         let downloaded_files = download_task.downloaded_files.lock().unwrap();
-        all_files.into_iter().filter(|item| !downloaded_files.contains(&item.segment_name)).collect()
+        all_files
+            .into_iter()
+            .filter(|item| !downloaded_files.contains(&item.segment_name))
+            .collect()
     };
 
     let tx1 = tx.clone();
-    tx1.send(ChannelMessage::DownloadSegment(file_total_nums)).unwrap();
+    tx1.send(ChannelMessage::DownloadSegment(file_total_nums))
+        .unwrap();
 
     // 处理存储下载失败的文件
-    let failed_filepath  = request_data.save_path.join(FAILED_FILENAME);
+    let failed_filepath = request_data.save_path.join(FAILED_FILENAME);
     if failed_filepath.is_file() {
         fs::remove_file(failed_filepath).unwrap();
     }
@@ -515,18 +601,26 @@ fn parse_download(
         let tx2 = tx.clone();
 
         pool.execute(move || {
-            if download_task_clone.is_pause.load(Ordering::Relaxed) || download_task_clone.is_cancel.load(Ordering::Relaxed) {
+            if download_task_clone.is_pause.load(Ordering::Relaxed)
+                || download_task_clone.is_cancel.load(Ordering::Relaxed)
+            {
                 return;
             }
             let mut is_finish = false;
             for attempt in 0..request_data.retry {
-                if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
+                if let Ok(resp) = client.get(&item.download_url).send()
+                    && resp.status().is_success()
+                {
                     // 这里忽略了key的大小
                     let content_length = resp.content_length().unwrap_or(0);
                     if let Ok(bytes) = resp.bytes() {
-                        let mut file = File::create(item.save_path.join(&item.segment_name)).unwrap();
+                        let mut file =
+                            File::create(item.save_path.join(&item.segment_name)).unwrap();
                         file.write_all(&bytes).unwrap();
-                        let _ = tx2.send(ChannelMessage::SegmentDownloaded { segment_name: item.segment_name, content_length });
+                        let _ = tx2.send(ChannelMessage::SegmentDownloaded {
+                            segment_name: item.segment_name,
+                            content_length,
+                        });
                         is_finish = true;
                         break;
                     }
@@ -559,7 +653,7 @@ fn byte_convert(size: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = size as f64;
     let mut unit_index = 0;
-    
+
     while size > 1024.0 && unit_index < UNITS.len() - 1 {
         size /= 1024.0;
         unit_index += 1;
@@ -574,9 +668,17 @@ fn record_failed_file(
     save_path: PathBuf,
     download_url: &str,
 ) {
-    download_manager.failed_files.lock().unwrap().push(download_url.to_string());
+    download_manager
+        .failed_files
+        .lock()
+        .unwrap()
+        .push(download_url.to_string());
     let failed_link_file = save_path.join(FAILED_FILENAME);
-    let mut file = OpenOptions::new().append(true).create(true).open(failed_link_file).unwrap();
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(failed_link_file)
+        .unwrap();
     if file.metadata().unwrap().len() > 0 {
         file.write_all(b"\n").unwrap();
     }
@@ -603,7 +705,7 @@ fn reset_download_status(
     } else {
         message
     };
-    
+
     // 快速释放该锁
     {
         download_task.downloaded_files.lock().unwrap().clear();
@@ -612,30 +714,38 @@ fn reset_download_status(
     download_task.is_new_task.store(true, Ordering::Relaxed);
     download_task.file_total_nums.store(0, Ordering::Relaxed);
 
-    ui_weak.upgrade_in_event_loop(move |ui| {
-        ui.invoke_show_message(final_message, failed_file_nums > 0);
-        ui.set_enable_start_btn(true);
-        ui.set_enable_pause_btn(false);
-        ui.set_enable_cancel_btn(false);
-        ui.set_is_downloading(false);
-        ui.set_is_pause(false);
-        ui.set_has_failed_file(failed_file_nums > 0);
-        
-        if is_cancel_reset {
-            ui.set_total_nums(0);
-            ui.set_downloaded_nums(0);
-        }
-    }).unwrap();
+    ui_weak
+        .upgrade_in_event_loop(move |ui| {
+            ui.invoke_show_message(final_message, failed_file_nums > 0);
+            ui.set_enable_start_btn(true);
+            ui.set_enable_pause_btn(false);
+            ui.set_enable_cancel_btn(false);
+            ui.set_is_downloading(false);
+            ui.set_is_pause(false);
+            ui.set_has_failed_file(failed_file_nums > 0);
+
+            if is_cancel_reset {
+                ui.set_total_nums(0);
+                ui.set_downloaded_nums(0);
+            }
+        })
+        .unwrap();
 }
 
 // 安全的创建保存目录
-fn create_safe_save_path(work_dir: &SharedString, video_name: &SharedString) -> Option<(PathBuf, String)> {
+fn create_safe_save_path(
+    work_dir: &SharedString,
+    video_name: &SharedString,
+) -> Option<(PathBuf, String)> {
     if video_name.is_empty() {
         return None;
     }
 
     // 只取文件名部分（去除路径）
-    let safe_name = Path::new(video_name).file_name().and_then(|n| n.to_str()).unwrap_or(video_name);
+    let safe_name = Path::new(video_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(video_name);
 
     // 移除非法字符
     let re = Regex::new(r#"[<>:"/\\|?*]"#).unwrap();

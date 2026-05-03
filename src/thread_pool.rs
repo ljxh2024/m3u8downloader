@@ -7,8 +7,8 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 /// 线程池
 pub struct ThreadPool {
-  pub workers: Vec<Worker>,
-  sender: Option<mpsc::Sender<Job>>,
+    pub workers: Vec<Worker>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
 /// 线程池管理
@@ -21,7 +21,10 @@ impl ThreadPool {
         for id in 0..size {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
-        ThreadPool { workers, sender: Some(sender) }
+        ThreadPool {
+            workers,
+            sender: Some(sender),
+        }
     }
 
     pub fn execute<F>(&self, f: F)
@@ -39,7 +42,6 @@ impl Drop for ThreadPool {
         drop(self.sender.take());
 
         for worker in self.workers.drain(..) {
-            println!("Shutting down worker {}", worker.id);
             worker.thread.join().unwrap();
         }
     }
@@ -58,11 +60,9 @@ impl Worker {
                 let message = receiver.lock().unwrap().recv();
                 match message {
                     Ok(job) => {
-                        // println!("Worker {} got a job; executing.", id);
                         job();
-                    },
+                    }
                     Err(_) => {
-                        // println!("Worker {} disconnected; shutting down.", id);
                         break;
                     }
                 }
