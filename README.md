@@ -18,5 +18,12 @@ M3U8下载器，使用  `Rust` + `Slint UI` 实现。
 - [ ] 自动选择最高分辨率下载（大师列表？）
 - [ ] 自定义请求头
 
+## 使用
+
+二选一
+
+- 克隆本项目手动构建
+- 下载 `exe` 文件：[m3u8downloader-x86_64-v0.1.0.exe](http://124.71.107.97/res/m3u8downloader-x86_64-v0.1.0.exe)
+
 ## 截图
 ![light](screenshots/light.jpg)
