@@ -129,7 +129,7 @@ enum ChannelMessage {
     RecycleTaskThead,
     // 切片下载完成
     SliceCompleted {
-        slice_name: String,
+        segment_name: String,
         content_length: u64,
     },
 }
@@ -138,7 +138,7 @@ enum ChannelMessage {
 #[derive(Debug)]
 struct WaitDownloadFile {
     // 切片名称
-    slice_name: String,
+    segment_name: String,
     // 保存目录
     save_path: PathBuf,
     // 下载链接
@@ -326,10 +326,10 @@ fn loop_receive_message(
                 }).unwrap();
             },
             // 切片下载完成，更新进度
-            ChannelMessage::SliceCompleted { slice_name, content_length } => {
+            ChannelMessage::SliceCompleted { segment_name, content_length } => {
                 let n = {
                     let mut downloaded = download_task.downloaded_files.lock().unwrap();
-                    downloaded.push(slice_name);
+                    downloaded.push(segment_name);
                     downloaded.len()
                 } as i32;
                 current_content_length += content_length;
@@ -426,38 +426,45 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     let mut writer = BufWriter::new(&m3u8_file);
     let mut wait_download_files: Vec<WaitDownloadFile> = vec![];
 
+    let mut index = 0;
     for line in contents.lines() {
         // :todo内部还有M3U8
         if line.ends_with(".m3u8") {
             break;
         }
 
+        if line.trim().is_empty() {
+            continue;
+        }
+
         if line.starts_with("#EXT-X-KEY") {
             let key = line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
-            let (key_name, url) = parse_m3u8_key_segment(&base_url, key)?;
+            let url = if key.starts_with("http://") || key.starts_with("https://") {
+                Url::parse(key)?
+            } else {
+                base_url.join(key)?
+            };
             wait_download_files.push(WaitDownloadFile {
-                slice_name: key_name.to_owned(),
+                segment_name: "key.key".to_string(),
                 save_path: request_data.save_path.to_owned(),
-                download_url: url,
+                download_url: url.to_string(),
             });
-            writeln!(writer, "{}", line.replace(key, &key_name))?;
-            continue;
-        }
-        
-        if !line.starts_with("#") && !line.trim().is_empty() {
-            let (slice_name, url) = parse_m3u8_key_segment(&base_url, line)?;
-            if !slice_name.trim().is_empty() {
-                wait_download_files.push(WaitDownloadFile{
-                    slice_name: slice_name.to_owned(),
-                    save_path: request_data.save_path.to_owned(),
-                    download_url: url,
-                });
-                writeln!(writer, "{}", slice_name.to_owned())?;
-            }
-            continue;
-        }
-        
-        if !line.trim().is_empty() {
+            writeln!(writer, "{}", line.replace(key, "key.key"))?;
+        } else if !line.starts_with("#") {
+            let url = if line.starts_with("http://") || line.starts_with("https://") {
+                Url::parse(line)?
+            } else {
+                base_url.join(line)?
+            };
+            let segment_name = format!("index{}.ts", index);
+            wait_download_files.push(WaitDownloadFile {
+                segment_name: segment_name.to_owned(),
+                save_path: request_data.save_path.to_owned(),
+                download_url: url.to_string(),
+            });
+            writeln!(writer, "{}", segment_name)?;
+            index += 1;
+        } else {
             writeln!(writer, "{}", line)?;
         }
     }
@@ -467,22 +474,6 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     Ok(wait_download_files)
-}
-
-// 解析m3u8里面的key与切片
-fn parse_m3u8_key_segment(base_url: &Url, s: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let url = if s.starts_with("http://") || s.starts_with("https://") {
-        Url::parse(s)?
-    } else {
-        base_url.join(s)?
-    };
-
-    let filename = url.path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .ok_or_else(|| format!("no slice:{}", url))? 
-        .to_string();
-
-    Ok((filename, url.to_string()))
 }
 
 // 解析并下载
@@ -499,7 +490,7 @@ fn parse_download(
         all_files
     } else {
         let downloaded_files = download_task.downloaded_files.lock().unwrap();
-        all_files.into_iter().filter(|item| !downloaded_files.contains(&item.slice_name)).collect()
+        all_files.into_iter().filter(|item| !downloaded_files.contains(&item.segment_name)).collect()
     };
 
     let tx1 = tx.clone();
@@ -528,11 +519,12 @@ fn parse_download(
             let mut is_finish = false;
             for attempt in 0..request_data.retry {
                 if let Ok(resp) = client.get(&item.download_url).send() && resp.status().is_success() {
+                    // 这里忽略了key的大小
                     let content_length = resp.content_length().unwrap_or(0);
                     if let Ok(bytes) = resp.bytes() {
-                        let mut file = File::create(item.save_path.join(&item.slice_name)).unwrap();
+                        let mut file = File::create(item.save_path.join(&item.segment_name)).unwrap();
                         file.write_all(&bytes).unwrap();
-                        let _ = tx2.send(ChannelMessage::SliceCompleted { slice_name: item.slice_name, content_length });
+                        let _ = tx2.send(ChannelMessage::SliceCompleted { segment_name: item.segment_name, content_length });
                         is_finish = true;
                         break;
                     }
