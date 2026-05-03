@@ -10,8 +10,8 @@ import {
 
 export component AppWindow inherits Window {
     title: "M3U8Downloader";
-    preferred-width: 370px;
-    preferred-height: 400px;
+    width: 350px;
+    height: 470px;
     
     // 按钮组
     in-out property <bool> enable-start-btn: true;
@@ -22,7 +22,7 @@ export component AppWindow inherits Window {
     in-out property <bool> is-downloading: false;
     in-out property <bool> is-pause: false;
     in-out property <bool> has-failed-file: false;
-    in-out property <bool> is-convert: false;
+    in-out property <bool> is-merge: false;
     in-out property <bool> is-delete-segment: false;
 
     // 输入组（后端可读可写）
@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
 
     // 输入组（后端只读）
     // out property <string> m3u8-url;
-    out property <string> m3u8-url: "http://localhost/res/videos/m3u8/1/index.m3u8";
+    out property <string> m3u8-url: "http://localhost/res/videos/m3u8/8/index.m3u8";
     // out property <string> video-name;
     out property <string> video-name: "m3u8test";
     out property <string> threads;
@@ -63,7 +63,7 @@ export component AppWindow inherits Window {
     TabWidget {
         // 首页
         Tab {
-            title: "Home";
+            title: "主页";
             VerticalBox {
                 // 输入组件，3列
                 GridLayout {
@@ -71,12 +71,12 @@ export component AppWindow inherits Window {
                     // 工作目录
                     Row {
                         Rectangle {
-                            width: 104px;
+                            width: 90px;
                             Text {
-                                text: "Working Directory";
+                                text: "下载目录";
                             }
                             Text {
-                                x: 101px;
+                                x: 74px;
                                 text: "*";
                                 color: red;
                             }
@@ -88,7 +88,7 @@ export component AppWindow inherits Window {
                         }
                         Button {
                             enabled: !root.is-downloading;
-                            text: "Change";
+                            text: "选择";
                             clicked => { root.select-dir(); }
                         }
                     }
@@ -96,10 +96,10 @@ export component AppWindow inherits Window {
                     Row {
                         Rectangle {
                             Text {
-                                text: "Video Name";
+                                text: "视频名称";
                             }
                             Text {
-                                x: 87px;
+                                x: 74px;
                                 text: "*";
                                 color: red;
                             }
@@ -114,10 +114,10 @@ export component AppWindow inherits Window {
                     Row {
                         Rectangle {
                             Text {
-                                text: "M3U8 URL";
+                                text: "M3U8地址";
                             }
                             Text {
-                                x: 81px;
+                                x: 76px;
                                 text: "*";
                                 color: red;
                             }
@@ -132,7 +132,7 @@ export component AppWindow inherits Window {
                     Row {
                         Rectangle {
                             Text {
-                                text: "Threads";
+                                text: "线程数";
                             }
                         }
                         LineEdit {
@@ -147,7 +147,7 @@ export component AppWindow inherits Window {
                     Row {
                         Rectangle {
                             Text {
-                                text: "Retry";
+                                text: "重试次数";
                             }
                         }
                         LineEdit {
@@ -162,7 +162,7 @@ export component AppWindow inherits Window {
                     Row {
                         Rectangle {
                             Text {
-                                text: "Timeout(s)";
+                                text: "连接超时(秒)";
                             }
                         }
                         LineEdit {
@@ -177,8 +177,8 @@ export component AppWindow inherits Window {
                 // 转换MP4选项
                 VerticalBox {
                     CheckBox {
-                        text: "Convert to MP4 after downloaded";
-                        checked <=> root.is-convert;
+                        text: "下载完成后合并为MP4";
+                        checked <=> root.is-merge;
                         enabled: !root.is-downloading || root.is-pause;
                         toggled() => {
                             if !self.checked && root.is-delete-segment {
@@ -187,26 +187,26 @@ export component AppWindow inherits Window {
                         }
                     }
                     CheckBox {
-                        text: "Delete the segments after converted";
+                        text: "合并后删除分片";
                         checked <=> root.is-delete-segment;
-                        enabled: root.is-convert && (!root.is-downloading || root.is-pause);
+                        enabled: root.is-merge && (!root.is-downloading || root.is-pause);
                     }
                 }
                 // 按钮事件操作
                 HorizontalBox {
                     Button {
-                        text: root.is-pause ? "Continue" : "Download";
+                        text: root.is-pause ? "继续下载" : "下载";
                         enabled: root.enable-start-btn && !root.work-dir.is-empty && !root.video-name.is-empty && !root.m3u8-url.is-empty;
                         primary: true;
                         clicked => { root.start-download(); }
                     }
                     Button {
-                        text: "Pause";
+                        text: "暂停";
                         enabled: root.enable-pause-btn;
                         clicked => { root.pause-download(); }
                     }
                     Button {
-                        text: "Cancel";
+                        text: "取消";
                         enabled: root.enable-cancel-btn;
                         clicked => { root.cancel-download(); }
                     }
@@ -214,7 +214,7 @@ export component AppWindow inherits Window {
                 HorizontalBox {
                     padding-bottom: 0px;
                     Text {
-                        text: "Progress " + (root.total_nums > 0 ? root.downloaded_nums + " / " + root.total_nums : "");
+                        text: "下载进度 " + (root.total_nums > 0 ? root.downloaded_nums + " / " + root.total_nums : "");
                     }
                     Text {
                         text: root.total_nums > 0 ? root.content-length : "";
@@ -237,7 +237,7 @@ export component AppWindow inherits Window {
                         mouse-cursor: pointer;
                         clicked => { root.open-failed-file(); }
                         Text {
-                            text: "Failed file";
+                            text: "查看下载失败的分片";
                             color: #3399ff;
                         }
                     }
@@ -246,7 +246,7 @@ export component AppWindow inherits Window {
         }
         // 关于页
         Tab {
-            title: "About";
+            title: "关于";
             Rectangle {
                 Text {
                     y: 140px;

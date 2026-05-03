@@ -11,7 +11,7 @@ use winsafe::{GetSystemMetrics, co::SM};
 slint::include_modules!();
 
 // 下载失败的文件名
-const FAILED_FILENAME: &str = "failed_link.txt";
+const FAILED_FILENAME: &str = "failed.txt";
 // M3U8文件名
 const M3U8_FILENAME: &str = "index.m3u8";
 // user agent
@@ -20,7 +20,7 @@ const APP_USER_AGENT: &str = "Chrome/147";
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
 
-    // 设置窗口居中
+    // 控制窗口位置
     let x = (GetSystemMetrics(SM::CXSCREEN) - 370) / 2;
     let y = (GetSystemMetrics(SM::CYSCREEN) - 600) / 2; // 尽量偏高
     window.window().set_position(slint::WindowPosition::Physical(PhysicalPosition {x: x, y: y}));
@@ -37,15 +37,17 @@ pub fn run() -> Result<(), slint::PlatformError> {
             ui.set_enable_start_btn(false);
             ui.set_is_downloading(true);
             ui.set_has_failed_file(false);
-            ui.invoke_show_message(SharedString::from("Parsing..."), false);
+            ui.invoke_show_message(SharedString::from("正在解析..."), false);
 
+            let (save_path, video_name) = create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap();
             tx_start.send(ChannelMessage::StartDownload(RequestData {
-                save_path: create_safe_save_path(&ui.get_work_dir(), &ui.get_video_name()).unwrap(),
+                video_name: video_name,
+                save_path: save_path,
                 m3u8_url: ui.get_m3u8_url().into(),
                 threads: ui.get_threads().parse::<usize>().unwrap_or(4),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
                 timeout: ui.get_retry().parse::<u64>().unwrap_or(3),
-                is_convert: ui.get_is_convert(),
+                is_merge: ui.get_is_merge(),
                 is_delete_segment: ui.get_is_delete_segment(),
             })).unwrap();
         }
@@ -58,7 +60,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         move || {
             let ui = ui_weak.unwrap();
             ui.set_enable_pause_btn(false);
-            ui.invoke_show_message(SharedString::from("Pausing..."), false);
+            ui.invoke_show_message(SharedString::from("正在暂停..."), false);
 
             tx_pause.send(ChannelMessage::Pause).unwrap();
         }
@@ -72,7 +74,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
             let ui = ui_weak.unwrap();
             ui.set_enable_cancel_btn(false);
             ui.set_enable_pause_btn(false);
-            ui.invoke_show_message(SharedString::from("Canceling..."), false);
+            ui.invoke_show_message(SharedString::from("正在取消..."), false);
             
             tx_cancel.send(ChannelMessage::Cancel).unwrap();
         }
@@ -123,12 +125,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
 #[derive(Debug)]
 enum ChannelMessage {
     StartDownload(RequestData),
-    DownloadSlicing(usize),
+    DownloadSegment(usize),
     Pause,
     Cancel,
     RecycleTaskThead,
-    // 切片下载完成
-    SliceCompleted {
+    SegmentDownloaded {
         segment_name: String,
         content_length: u64,
     },
@@ -137,7 +138,7 @@ enum ChannelMessage {
 // 待下载文件信息
 #[derive(Debug)]
 struct WaitDownloadFile {
-    // 切片名称
+    // 分片名称
     segment_name: String,
     // 保存目录
     save_path: PathBuf,
@@ -176,12 +177,13 @@ impl DownloadTask {
 // 请求参数
 #[derive(Debug, Clone)]
 struct RequestData {
+    video_name: String,
     save_path: PathBuf,
     m3u8_url: String,
     threads: usize,
     retry: u32,
     timeout: u64,
-    is_convert: bool,
+    is_merge: bool,
     is_delete_segment: bool,
 }
 
@@ -217,8 +219,8 @@ fn loop_receive_message(
                     current_content_length = 0;
                 }
 
-                // 构建转换MP4参数
-                let (convert_args, is_delete_segment, save_path) = if request_data.is_convert {
+                // 构建合并MP4参数
+                let (convert_args, is_delete_segment, save_path) = if request_data.is_merge {
                     (vec![
                         "-allowed_extensions".to_string(),
                         "ALL".to_string(),
@@ -226,7 +228,7 @@ fn loop_receive_message(
                         request_data.save_path.join(M3U8_FILENAME).to_str().unwrap().to_string(),
                         "-c".to_string(),
                         "copy".to_string(),
-                        request_data.save_path.join("output.mp4").to_str().unwrap().to_string()
+                        request_data.save_path.join(format!("{}.mp4", request_data.video_name)).to_str().unwrap().to_string()
                     ], request_data.is_delete_segment, request_data.save_path.clone())
                 } else {
                     (vec![], false, PathBuf::new())
@@ -263,7 +265,7 @@ fn loop_receive_message(
                     // 暂停处理
                     if download_task1.is_pause.load(Ordering::Relaxed) {
                         ui_weak1.upgrade_in_event_loop(move |ui| {
-                            ui.invoke_show_message("Paused.".into(), false);
+                            ui.invoke_show_message("已暂停".into(), false);
                             ui.set_is_pause(true);
                             ui.set_enable_start_btn(true);
                         }).unwrap();
@@ -272,7 +274,7 @@ fn loop_receive_message(
 
                     // 取消处理
                     if download_task1.is_cancel.load(Ordering::Relaxed) {
-                        reset_download_status(&ui_weak1, &download_task1, SharedString::from("Canceled."), true);
+                        reset_download_status(&ui_weak1, &download_task1, SharedString::from("已取消"), true);
                         return;
                     }
 
@@ -281,23 +283,23 @@ fn loop_receive_message(
                         let guard = download_task1.downloaded_files.lock().unwrap();
                         guard.clone()
                     };
-                    // 所有切片均已下载
+                    // 所有分片均已下载
                     if download_task1.file_total_nums.load(Ordering::Relaxed) == downloaded_files.len() {
-                        let mut message = String::from("All segments have been downloaded!");
+                        let mut message = String::from("所有分片已下载完毕");
                         // 不为空 == 转MP4
                         if !convert_args.is_empty() {
                             ui_weak1.upgrade_in_event_loop(move |ui| {
-                                ui.invoke_show_message("Converting to MP4 now...".into(), false);
+                                ui.invoke_show_message("正在合并为MP4...".into(), false);
                             }).unwrap();
                             // 使用ffmpeg转MP4
-                            match convert_and_delete(convert_args, is_delete_segment, downloaded_files, save_path) {
+                            match merge_and_delete(convert_args, is_delete_segment, downloaded_files, save_path) {
                                 Ok(msg) => {
                                     message = msg;
                                 },
                                 Err(e) => {
                                     match e.kind() {
                                         io::ErrorKind::NotFound => {
-                                            message = String::from("An error occurred: Cannot find the ffmpeg command");
+                                            message = String::from("合并失败：未找到FFmpeg命令");
                                         },
                                         _ => {
                                            message = String::from(e.to_string());
@@ -308,25 +310,25 @@ fn loop_receive_message(
                         }
                         reset_download_status(&ui_weak1, &download_task1, SharedString::from(message), false);
                     } else {
-                        // 有切片下载失败了
+                        // 有分片下载失败了
                         reset_download_status(&ui_weak1, &download_task1, SharedString::new(), false);
                     }
                 });
                 // 收集任务线程句柄
                 *task_thread_handle.lock().unwrap() = Some(task_thread);
             },
-            // M3U8解析成功，即将下载切片
-            ChannelMessage::DownloadSlicing(file_total_nums) => {
+            // M3U8解析成功，即将下载分片
+            ChannelMessage::DownloadSegment(file_total_nums) => {
                 ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.invoke_show_message("Downloading...".into(), false);
+                    ui.invoke_show_message("正在下载分片...".into(), false);
                     ui.set_total_nums(file_total_nums as i32);
                     ui.set_enable_pause_btn(true);
                     ui.set_enable_cancel_btn(true);
                     ui.set_is_pause(false);
                 }).unwrap();
             },
-            // 切片下载完成，更新进度
-            ChannelMessage::SliceCompleted { segment_name, content_length } => {
+            // 分片下载完成，更新进度
+            ChannelMessage::SegmentDownloaded { segment_name, content_length } => {
                 let n = {
                     let mut downloaded = download_task.downloaded_files.lock().unwrap();
                     downloaded.push(segment_name);
@@ -347,7 +349,7 @@ fn loop_receive_message(
             ChannelMessage::Cancel => {
                 download_task.is_cancel.store(true, Ordering::Relaxed);
                 if download_task.is_pause.load(Ordering::Relaxed) {
-                    reset_download_status(&ui_weak, &download_task, SharedString::from("Canceled."), true);
+                    reset_download_status(&ui_weak, &download_task, SharedString::from("已取消"), true);
                 }
             },
             // 回收任务线程
@@ -361,33 +363,33 @@ fn loop_receive_message(
     }
 }
 
-// 转换MP4并删除切片
-fn convert_and_delete(
+// 合并MP4并删除分片
+fn merge_and_delete(
     args: Vec<String>,
     is_delete_segment: bool,
     downloaded_files: Vec<String>,
     save_path: PathBuf,
 ) -> Result<String, io::Error> {
     let cmd = Command::new("ffmpeg").args(args).creation_flags(0x08000000).output()?;
-    // 转换MP4成功
+    // 合并MP4成功
     if cmd.status.success() {
-        let mut msg = String::from("Successfully converted to MP4!");
-        // 勾选了要删除切片
+        let mut msg = String::from("合并完成");
+        // 勾选了要删除分片
         if is_delete_segment {
             // 删除m3u8
             let _ = fs::remove_file(save_path.join(M3U8_FILENAME));
-            // 删除切片
+            // 删除分片
             for slice_name in downloaded_files {
                 let slice_filepath = save_path.join(slice_name);
                 if slice_filepath.is_file() {
                     let _ = fs::remove_file(slice_filepath);
                 }
             }
-            msg.push_str(" And deleted the segments!");
+            msg.push_str("，分片已删除");
         }
         Ok(msg.into())
     } else {
-        Err(io::Error::new(io::ErrorKind::Other, "Failed to convert MP4"))
+        Err(io::Error::new(io::ErrorKind::Other, "合并失败"))
     }
 }
 
@@ -415,11 +417,11 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     if is_timeout {
-        return Err("Connection timeout".into());
+        return Err("链接不可用".into());
     }
 
     if contents.trim().is_empty() {
-        return Err("Content is empty".into());
+        return Err("索引文件无内容".into());
     }
 
     let m3u8_file = File::create(request_data.save_path.join(M3U8_FILENAME))?;
@@ -470,7 +472,7 @@ fn resolve_m3u8(request_data: RequestData) -> Result<Vec<WaitDownloadFile>, Box<
     }
 
     if wait_download_files.is_empty() {
-        return Err("No downloadable".into());
+        return Err("无分片可下载".into());
     }
 
     Ok(wait_download_files)
@@ -485,7 +487,7 @@ fn parse_download(
     let all_files = resolve_m3u8(request_data.clone())?;
     let file_total_nums = all_files.len();
     let wait_download_files = if download_task.is_new_task.load(Ordering::Relaxed) {
-        // 存储总切片数
+        // 存储总分片数
         download_task.file_total_nums.store(all_files.len(), Ordering::Relaxed);
         all_files
     } else {
@@ -494,7 +496,7 @@ fn parse_download(
     };
 
     let tx1 = tx.clone();
-    tx1.send(ChannelMessage::DownloadSlicing(file_total_nums)).unwrap();
+    tx1.send(ChannelMessage::DownloadSegment(file_total_nums)).unwrap();
 
     // 处理存储下载失败的文件
     let failed_filepath  = request_data.save_path.join(FAILED_FILENAME);
@@ -524,7 +526,7 @@ fn parse_download(
                     if let Ok(bytes) = resp.bytes() {
                         let mut file = File::create(item.save_path.join(&item.segment_name)).unwrap();
                         file.write_all(&bytes).unwrap();
-                        let _ = tx2.send(ChannelMessage::SliceCompleted { segment_name: item.segment_name, content_length });
+                        let _ = tx2.send(ChannelMessage::SegmentDownloaded { segment_name: item.segment_name, content_length });
                         is_finish = true;
                         break;
                     }
@@ -535,7 +537,7 @@ fn parse_download(
                     thread::sleep(Duration::from_millis(200));
                 }
             }
-            // 切片下载失败
+            // 分片下载失败
             if !is_finish {
                 record_failed_file(&download_task_clone, item.save_path, &item.download_url);
             }
@@ -566,7 +568,7 @@ fn byte_convert(size: u64) -> String {
     format!("{:.2} {}", size, UNITS[unit_index])
 }
 
-// 记录下载失败的切片
+// 记录下载失败的分片
 fn record_failed_file(
     download_manager: &Arc<DownloadTask>,
     save_path: PathBuf,
@@ -597,11 +599,7 @@ fn reset_download_status(
 
     // 构建最终消息
     let final_message = if failed_file_nums > 0 {
-        format!(
-            "{} file{} cannot be downloaded",
-            failed_file_nums,
-            if failed_file_nums > 1 { "s" } else { "" }
-        ).into()
+        format!("有{}个分片无法下载", failed_file_nums,).into()
     } else {
         message
     };
@@ -631,7 +629,7 @@ fn reset_download_status(
 }
 
 // 安全的创建保存目录
-fn create_safe_save_path(work_dir: &SharedString, video_name: &SharedString) -> Option<PathBuf> {
+fn create_safe_save_path(work_dir: &SharedString, video_name: &SharedString) -> Option<(PathBuf, String)> {
     if video_name.is_empty() {
         return None;
     }
@@ -655,5 +653,5 @@ fn create_safe_save_path(work_dir: &SharedString, video_name: &SharedString) -> 
         fs::create_dir(&save_path).unwrap();
     }
 
-    Some(save_path)
+    Some((save_path, clean_name.to_string()))
 }
