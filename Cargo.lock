@@ -2770,6 +2770,7 @@ dependencies = [
  "slint",
  "slint-build",
  "url",
+ "winsafe",
 ]
 
 [[package]]
@@ -6299,6 +6300,12 @@ checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcfff8264c3af1b0352006934e2265365ecb5a145aee88e770dc8b82e0456f4f"
 
 [[package]]
 name = "wit-bindgen"

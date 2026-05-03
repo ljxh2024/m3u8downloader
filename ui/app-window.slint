@@ -10,6 +10,8 @@ import {
 
 export component AppWindow inherits Window {
     title: "M3U8Downloader";
+    preferred-width: 370px;
+    preferred-height: 400px;
     
     // 按钮组
     in-out property <bool> enable-start-btn: true;
@@ -74,7 +76,7 @@ export component AppWindow inherits Window {
                                 text: "Working Directory";
                             }
                             Text {
-                                x: 102px;
+                                x: 101px;
                                 text: "*";
                                 color: red;
                             }
@@ -138,6 +140,7 @@ export component AppWindow inherits Window {
                             input-type: number;
                             colspan: 2;
                             enabled: !root.is-downloading || root.is-pause;
+                            placeholder-text: "4";
                         }
                     }
                     // 重试次数
@@ -152,6 +155,7 @@ export component AppWindow inherits Window {
                             input-type: number;
                             colspan: 2;
                             enabled: !root.is-downloading || root.is-pause;
+                            placeholder-text: "3";
                         }
                     }
                     // 超时
@@ -166,6 +170,7 @@ export component AppWindow inherits Window {
                             input-type: number;
                             colspan: 2;
                             enabled: !root.is-downloading || root.is-pause;
+                            placeholder-text: "5";
                         }
                     }
                 }

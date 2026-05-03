@@ -9,6 +9,7 @@ rfd = "0.17.2"
 reqwest = { version = "0.13", features = ["blocking", "stream"] }
 url = "2.5.8"
 regex = "1.12.3"
+winsafe = { version = "0.0.27", features = ["user"] }
 
 [build-dependencies]
 slint-build = "1.16.0"

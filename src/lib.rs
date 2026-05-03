@@ -1,11 +1,12 @@
 pub mod thread_pool;
 
 use std::{fs::{self, File, OpenOptions}, io::{self, BufWriter, Write}, os::windows::process::CommandExt, path::{Path, PathBuf}, process::Command, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc}, thread, time::Duration};
-use slint::SharedString;
+use slint::{PhysicalPosition, SharedString};
 use url::Url;
 use reqwest::blocking::Client;
 use crate::thread_pool::ThreadPool;
 use regex::Regex;
+use winsafe::{GetSystemMetrics, co::SM};
 
 slint::include_modules!();
 
@@ -18,6 +19,11 @@ const APP_USER_AGENT: &str = "Chrome/147";
 
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
+
+    // 设置窗口居中
+    let x = (GetSystemMetrics(SM::CXSCREEN) - 370) / 2;
+    let y = (GetSystemMetrics(SM::CYSCREEN) - 600) / 2; // 尽量偏高
+    window.window().set_position(slint::WindowPosition::Physical(PhysicalPosition {x: x, y: y}));
 
     let (tx, rx) = mpsc::channel();
 
