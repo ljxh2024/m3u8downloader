@@ -26,20 +26,20 @@ export component AppWindow inherits Window {
     in-out property <bool> is-delete-segment: false;
 
     // 输入组（后端可读可写）
-    // in-out property <string> work-dir;
-    in-out property <string> work-dir: "F:\\temp";
+    in-out property <string> work-dir;
+    // in-out property <string> work-dir: "F:\\temp";
     in-out property <int> total_nums;
     in-out property <int> downloaded_nums;
     in-out property <string> content-length;
 
     // 输入组（后端只读）
-    // out property <string> m3u8-url;
-    out property <string> m3u8-url: "http://localhost/res/videos/m3u8/1/index.m3u8";
-    // out property <string> video-name;
-    out property <string> video-name: "m3u8test";
-    out property <string> threads: 4;
-    out property <string> retry: 3;
-    out property <string> timeout: 5;
+    out property <string> m3u8-url;
+    // out property <string> m3u8-url: "http://localhost/res/videos/m3u8/1/index.m3u8";
+    out property <string> video-name;
+    // out property <string> video-name: "m3u8test";
+    out property <string> threads;
+    out property <string> retry;
+    out property <string> timeout;
     out property <string> message;
     out property <bool> is-err-msg;
     out property <color> normal-msg-color: Palette.color-scheme == ColorScheme.light ? #323130 : #e6e6e6;
@@ -170,7 +170,7 @@ export component AppWindow inherits Window {
                             input-type: number;
                             colspan: 2;
                             enabled: !root.is-downloading || root.is-pause;
-                            placeholder-text: "5";
+                            placeholder-text: "3";
                         }
                     }
                 }

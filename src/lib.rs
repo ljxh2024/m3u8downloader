@@ -44,7 +44,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 m3u8_url: ui.get_m3u8_url().into(),
                 threads: ui.get_threads().parse::<usize>().unwrap_or(4),
                 retry: ui.get_retry().parse::<u32>().unwrap_or(3),
-                timeout: ui.get_retry().parse::<u64>().unwrap_or(5),
+                timeout: ui.get_retry().parse::<u64>().unwrap_or(3),
                 is_convert: ui.get_is_convert(),
                 is_delete_segment: ui.get_is_delete_segment(),
             })).unwrap();
